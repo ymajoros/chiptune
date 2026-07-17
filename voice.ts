@@ -591,6 +591,18 @@ function syllabify(tokens: string[]): string[][] {
       }
       continue;
     }
+    // "=" is a SPLIT: the next syllable shares the current note rather than
+    // taking a new one. The inverse of "-". Needed because a simplified MIDI
+    // lead holds one long note where the singer delivers several quick
+    // syllables on that pitch — melisma cannot express that.
+    if (tok === "=") {
+      if (cur.length) {
+        sylls.push(cur);
+        cur = [];
+      }
+      sylls.push(["="]);
+      continue;
+    }
     cur.push(tok);
     if (!explicit && isVowel(tok)) {
       sylls.push(cur);
@@ -608,6 +620,40 @@ function syllabify(tokens: string[]): string[][] {
   return sylls;
 }
 
+/**
+ * Sing syllables placed at ABSOLUTE times, each with its own pitch — the model a
+ * karaoke (.kar) file gives you directly, since it stamps every sung syllable at
+ * the tick it is sung on. Unlike singToBuffer this does not assume one syllable
+ * per note or that syllables abut: real singing has rests, and the .kar timing
+ * is the singer's own, so nothing has to be guessed.
+ *
+ * Gaps become silence; a syllable's consonants keep their natural length and its
+ * vowel stretches to fill whatever time is left.
+ */
+export function singTimed(
+  items: { phonemes: string[]; start: number; dur: number; midi: number }[],
+  formantScale = 1,
+): Float32Array {
+  const segs: Seg[] = [];
+  const noteTimes: { hz: number; start: number; dur: number }[] = [];
+  let t = 0;
+  for (const it of items) {
+    if (it.start > t + 0.001) {
+      segs.push(...toSegments(["_"], 1, [it.start - t], formantScale)); // rest
+      t = it.start;
+    }
+    const consonants = it.phonemes.filter((x) => !isVowel(x));
+    const conDur = consonants.reduce((s, x) => s + PHONEMES[x].dur, 0);
+    const squeeze = conDur > it.dur * 0.7 ? (it.dur * 0.7) / conDur : 1;
+    const vowelDur = Math.max(0.03, it.dur - conDur * squeeze);
+    const durs = it.phonemes.map((x) => (isVowel(x) ? vowelDur : PHONEMES[x].dur * squeeze));
+    segs.push(...toSegments(it.phonemes, 1, durs, formantScale));
+    noteTimes.push({ hz: midiToHz(it.midi), start: t, dur: conDur * squeeze + vowelDur });
+    t += conDur * squeeze + vowelDur;
+  }
+  return renderSegments(segs, singF0(noteTimes));
+}
+
 /** Sing `tokens` over `notes` and return the audio buffer (used by chorus.ts). */
 export function singToBuffer(
   tokens: string[],
@@ -621,23 +667,39 @@ export function singToBuffer(
 function buildSinging(tokens: string[], notes: { midi: number; dur: number }[], scale = 1) {
   const sylls = syllabify(tokens);
 
-  // Fold melisma ties into their syllable: a unit is one syllable stretched
-  // over `noteCount` notes. Its vowel simply lasts longer while the pitch
-  // moves under it — that IS a melisma.
-  const units: { syl: string[]; noteCount: number }[] = [];
+  /**
+   * A unit is one note-slot. `noteCount > 1` is a melisma (one syllable held
+   * across several notes); `syls.length > 1` is a split (several syllables
+   * sharing the slot, dividing its time at a constant pitch).
+   */
+  const units: { syls: string[][]; noteCount: number }[] = [];
+  let shareNext = false;
   for (const syl of sylls) {
     if (syl.length === 1 && syl[0] === "-") {
       if (!units.length) throw new Error('melisma "-" with no preceding syllable');
       units[units.length - 1].noteCount++;
-    } else units.push({ syl, noteCount: 1 });
+      continue;
+    }
+    if (syl.length === 1 && syl[0] === "=") {
+      if (!units.length) throw new Error('split "=" with no preceding syllable');
+      shareNext = true;
+      continue;
+    }
+    if (shareNext) {
+      units[units.length - 1].syls.push(syl);
+      shareNext = false;
+    } else {
+      units.push({ syls: [syl], noteCount: 1 });
+    }
   }
 
   const needed = units.reduce((s, u) => s + u.noteCount, 0);
   if (needed !== notes.length) {
+    const shown = units.map((u) => u.syls.map((x) => x.join("")).join("=")).join(" ");
     console.error(
-      `note/syllable mismatch: ${needed} notes needed by ` +
-        `${units.length} syllables (${units.map((u) => u.syl.join("")).join(" ")}) ` +
-        `but ${notes.length} notes given. Add "-" to hold a syllable over an extra note.`,
+      `note/syllable mismatch: ${needed} notes needed by ${units.length} slots ` +
+        `(${shown}) but ${notes.length} notes given. ` +
+        `"-" holds a syllable over an extra note; "=" shares a note between syllables.`,
     );
     process.exit(1);
   }
@@ -650,18 +712,26 @@ function buildSinging(tokens: string[], notes: { midi: number; dur: number }[], 
     const mine = notes.slice(ni, ni + u.noteCount);
     ni += u.noteCount;
     const span = mine.reduce((s, n) => s + n.dur, 0);
-    const consonants = u.syl.filter((x) => !isVowel(x));
-    const conDur = consonants.reduce((s, x) => s + PHONEMES[x].dur, 0);
-    const vowelDur = Math.max(0.05, span - conDur);
-    const durs = u.syl.map((x) => (isVowel(x) ? vowelDur : PHONEMES[x].dur));
-    segs.push(...toSegments(u.syl, 1, durs, scale));
-    // one F0 entry per note, so a tied syllable changes pitch mid-vowel
-    let nt = t;
+    const share = span / u.syls.length; // split the slot evenly between its syllables
+
+    for (const syl of u.syls) {
+      const consonants = syl.filter((x) => !isVowel(x));
+      const conDur = consonants.reduce((s, x) => s + PHONEMES[x].dur, 0);
+      // a split syllable may be shorter than its own consonants: squeeze them
+      const squeeze = conDur > share * 0.7 ? (share * 0.7) / conDur : 1;
+      const vowelDur = Math.max(0.03, share - conDur * squeeze);
+      const durs = syl.map((x) => (isVowel(x) ? vowelDur : PHONEMES[x].dur * squeeze));
+      segs.push(...toSegments(syl, 1, durs, scale));
+      t += conDur * squeeze + vowelDur;
+    }
+
+    // one F0 entry per note, so a tied syllable changes pitch mid-vowel and a
+    // split keeps every syllable on the same pitch
+    let nt = t - span;
     for (const n of mine) {
       noteTimes.push({ hz: midiToHz(n.midi), start: nt, dur: n.dur });
       nt += n.dur;
     }
-    t += conDur + vowelDur;
   }
   return { segs, noteTimes };
 }

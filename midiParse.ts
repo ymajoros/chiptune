@@ -20,11 +20,25 @@ export interface Note {
   track: number;
 }
 
+/**
+ * One karaoke syllable. `.kar` files (a MIDI convention, not a separate format)
+ * carry the lyrics as Text/Lyric meta events, one per SUNG syllable, stamped at
+ * the tick it is sung on — i.e. the singer's own alignment, already done.
+ * `\` starts a paragraph and `/` starts a line; both are stripped into `break`.
+ */
+export interface Lyric {
+  time: number; // seconds
+  text: string; // the syllable, as written
+  break: "" | "line" | "para";
+}
+
 export interface Song {
   ppq: number;
   tempoBpm: number;
   duration: number;
   notes: Note[];
+  lyrics: Lyric[]; // empty unless the file is a .kar
+  meta: string[]; // @-tags: title, artist, language...
 }
 
 /** Read a MIDI variable-length quantity; returns [value, nextIndex]. */
@@ -52,6 +66,8 @@ export function parseMidi(path: string): Song {
   const tempoEvents: [number, number][] = []; // [absTick, usPerQuarter]
   const rawNotes: [number, number, number, number, number, number][] = [];
   // [startTick, endTick, pitch, velocity, channel, track]
+  const rawLyrics: [number, string][] = []; // [absTick, syllable]
+  const meta: string[] = []; // @-tags from a .kar header
 
   for (let track = 0; track < ntracks; track++) {
     if (data.toString("ascii", pos, pos + 4) !== "MTrk") throw new Error("bad track header");
@@ -88,6 +104,11 @@ export function parseMidi(path: string): Song {
         if (metaType === 0x51 && mlen === 3) {
           const uspq = (data[i] << 16) | (data[i + 1] << 8) | data[i + 2];
           tempoEvents.push([absTick, uspq]);
+        } else if (metaType === 0x01 || metaType === 0x05) {
+          // Text (0x01) / Lyric (0x05). latin1: .kar files predate UTF-8.
+          const txt = data.toString("latin1", i, i + mlen);
+          if (txt.startsWith("@")) meta.push(txt); // @KMIDI, @T title, @L lang...
+          else if (txt.trim() !== "") rawLyrics.push([absTick, txt]);
         }
         i += mlen;
       } else if (status === 0xf0 || status === 0xf7) {
@@ -146,11 +167,18 @@ export function parseMidi(path: string): Song {
     return { start, dur, pitch, velocity, channel, track };
   });
 
+  const lyrics: Lyric[] = rawLyrics
+    .sort((a, b) => a[0] - b[0])
+    .map(([tick, raw]) => {
+      const brk = raw.startsWith("\\") ? "para" : raw.startsWith("/") ? "line" : "";
+      return { time: tickToSec(tick), text: raw.replace(/^[\\/]/, ""), break: brk as "" | "line" | "para" };
+    });
+
   notes.sort((a, b) => a.start - b.start);
   const duration = notes.reduce((m, n) => Math.max(m, n.start + n.dur), 0);
   const tempoBpm = Math.round((60_000_000 / tempoEvents[0][1]) * 10) / 10;
 
-  return { ppq, tempoBpm, duration, notes };
+  return { ppq, tempoBpm, duration, notes, lyrics, meta };
 }
 
 // run directly:  node midiParse.ts <file.mid>
