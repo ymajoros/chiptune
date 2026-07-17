@@ -1,0 +1,5 @@
+# generated audio
+*.wav
+# generated intermediates
+song.json
+__pycache__/
