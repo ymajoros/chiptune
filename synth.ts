@@ -58,6 +58,7 @@ export interface SubConfig {
   envDecay: number; // seconds; how fast the cutoff falls back to base
   detune: number; // unison spread, cents
   voices: number; // unison oscillator count
+  drive?: number; // waveshaping distortion (1 = clean; >1 crunches). tanh soft-clip pre-filter.
 }
 
 /**
@@ -130,6 +131,30 @@ export interface RenderOptions {
   reverb?: Reverb; // post-mix reverb
   gm?: boolean; // render each note with its GM-program voice (multi-instrument)
   drums?: boolean; // synthesize channel-10 percussion (see drums.ts)
+  compress?: Compress; // master bus compression (glue; brings sustained parts up)
+  voiceOverrides?: Record<string, VoiceOverride>; // per "track:channel" instrument/param edits
+}
+
+/** Master bus compressor: soft-knee, peak-detecting, stereo-linked. */
+export interface Compress {
+  threshold: number; // dB (e.g. -18)
+  ratio: number; // e.g. 3 (3:1)
+  attack: number; // seconds
+  release: number; // seconds
+}
+
+/** Per-channel override: swap the GM program and/or tweak individual voice fields. */
+export interface VoiceOverride {
+  program?: number; // pick a different GM instrument for this channel
+  gain?: number;
+  attack?: number;
+  release?: number;
+  foldAbove?: number;
+  harmonics?: Harmonic[];
+  fm?: FmConfig;
+  sub?: SubConfig;
+  ks?: KsConfig;
+  formant?: FormantConfig;
 }
 
 // Vowel formant table: [F1,F2,F3] Hz, matching gains, and bandwidths Hz.
@@ -241,6 +266,7 @@ function renderSub(
   }
 
   const square = sub.wave === "square";
+  const drive = sub.drive ?? 1;
   const envDecaySamples = Math.max(sub.envDecay * SR, 1);
   const q1 = Math.max(2 * (1 - sub.resonance), 0.05); // damping; lower -> more resonant
   let low = 0;
@@ -266,6 +292,11 @@ function renderSub(
       phases[v] = ph;
     }
     s /= nv;
+
+    // --- distortion: tanh soft-clip BEFORE the filter, like a guitar amp
+    // (preamp overdrive -> the filter then acts as the speaker cabinet, taming
+    // the harsh top). drive 1 is clean; higher folds the saw into a fuzz. ---
+    if (drive > 1) s = Math.tanh(s * drive) / Math.tanh(drive);
 
     // --- resonant low-pass with envelope-swept cutoff ---
     let fc = sub.cutoff + sub.envAmount * Math.exp(-k / envDecaySamples);
@@ -501,17 +532,10 @@ function masterGain(dry: Float32Array, mixPeak: number): number {
  * program in effect for that note's (track, channel) at its start time. Tracks
  * with no program default to 0 (Acoustic Grand).
  */
-export function gmVoiceFor(song: Song): (note: Note) => Voice {
-  const cache = new Map<number, Voice>();
-  const get = (prog: number): Voice => {
-    let v = cache.get(prog);
-    if (!v) {
-      v = gmVoice(prog);
-      cache.set(prog, v);
-    }
-    return v;
-  };
+export function gmVoiceFor(song: Song, overrides?: Record<string, VoiceOverride>): (note: Note) => Voice {
+  const cache = new Map<string, Voice>();
   return (note: Note): Voice => {
+    // program in effect for this (track, channel) at the note's start
     let prog = 0;
     let best = -1;
     for (const p of song.programs) {
@@ -520,17 +544,95 @@ export function gmVoiceFor(song: Song): (note: Note) => Voice {
         prog = p.program;
       }
     }
-    return get(prog);
+    const key = `${note.track}:${note.channel}`;
+    const ov = overrides?.[key];
+    const cacheKey = `${prog}|${key}`;
+    let v = cache.get(cacheKey);
+    if (!v) {
+      v = gmVoice(ov?.program ?? prog);
+      if (ov) {
+        // merge only the fields the override actually sets; an override that
+        // swaps the engine (e.g. sets `fm`) must clear the others.
+        const engineKeys: (keyof VoiceOverride)[] = ["harmonics", "fm", "sub", "ks", "formant"];
+        if (engineKeys.some((k) => ov[k] !== undefined)) {
+          v = { attack: v.attack, release: v.release, gain: v.gain, foldAbove: v.foldAbove };
+        }
+        v = { ...v, ...ov };
+      }
+      cache.set(cacheKey, v);
+    }
+    return v;
   };
 }
 
-/** Mono render: dry mix -> sympathetic -> delay -> reverb, then one linear gain. */
+/**
+ * Master bus compressor — soft-knee, peak-detecting, stereo-linked. Stateful, so
+ * the same instance works for a whole offline buffer or block-by-block streaming.
+ * Brings sustained instruments up under the drum transients (the "produced" glue
+ * a dry mix lacks), unlike the melody-vs-drums imbalance of raw peak normalizing.
+ */
+export class Compressor {
+  private envDb = 0; // current gain reduction envelope, dB
+  private readonly thr: number;
+  private readonly slope: number; // 1 - 1/ratio
+  private readonly aA: number;
+  private readonly aR: number;
+  private readonly knee = 6; // dB soft knee width
+
+  constructor(c: Compress) {
+    this.thr = c.threshold;
+    this.slope = 1 - 1 / Math.max(c.ratio, 1);
+    this.aA = 1 - Math.exp(-1 / (Math.max(c.attack, 1e-4) * SR));
+    this.aR = 1 - Math.exp(-1 / (Math.max(c.release, 1e-4) * SR));
+  }
+
+  /** Compress a single buffer in place. */
+  processMono(buf: Float32Array): void {
+    for (let k = 0; k < buf.length; k++) {
+      buf[k] = this.step(buf[k], Math.abs(buf[k]));
+    }
+  }
+
+  /** One sample: apply the current gain to `sample`, driven by detector level `x`. */
+  private step(sample: number, x: number): number {
+    const xdb = 20 * Math.log10(x + 1e-9);
+    const over = xdb - this.thr;
+    let targetGr: number;
+    if (over <= -this.knee / 2) targetGr = 0;
+    else if (over >= this.knee / 2) targetGr = over * this.slope;
+    else {
+      const t = (over + this.knee / 2) / this.knee;
+      targetGr = t * t * (over + this.knee / 2) * this.slope;
+    }
+    const a = targetGr > this.envDb ? this.aA : this.aR;
+    this.envDb += a * (targetGr - this.envDb);
+    return sample * 10 ** (-this.envDb / 20);
+  }
+
+  /** Compress `left`/`right` in place (stereo-linked detector). */
+  processStereo(left: Float32Array, right: Float32Array): void {
+    for (let k = 0; k < left.length; k++) {
+      const x = Math.max(Math.abs(left[k]), Math.abs(right[k]));
+      const g = this.step(1, x); // gain for this sample
+      left[k] *= g;
+      right[k] *= g;
+    }
+  }
+}
+
+/** Voice resolver for a render: GM (with per-channel overrides) or the single opts voice. */
+function voiceResolver(song: Song, opts: RenderOptions): ((n: Note) => Voice) | undefined {
+  return opts.gm ? gmVoiceFor(song, opts.voiceOverrides) : undefined;
+}
+
+/** Mono render: dry mix -> sympathetic -> delay -> reverb -> compress, then one gain. */
 export function render(song: Song, opts: RenderOptions = DEFAULT_OPTS): Float32Array {
-  const dry = renderDry(song, opts, opts.gm ? gmVoiceFor(song) : undefined);
+  const dry = renderDry(song, opts, voiceResolver(song, opts));
   let out = dry;
   if (opts.sympathetic) out = addSympathetic(out, opts.sympathetic);
   if (opts.delay) out = applyDelay(out, opts.delay);
   if (opts.reverb) out = applyReverb(out, opts.reverb, 0);
+  if (opts.compress) new Compressor(opts.compress).processMono(out);
   const g = masterGain(dry, peakOf(out));
   for (let k = 0; k < out.length; k++) out[k] *= g;
   return out;
@@ -542,7 +644,7 @@ export function render(song: Song, opts: RenderOptions = DEFAULT_OPTS): Float32A
  * Returns [left, right].
  */
 export function renderStereo(song: Song, opts: RenderOptions = DEFAULT_OPTS): [Float32Array, Float32Array] {
-  const dryMono = renderDry(song, opts, opts.gm ? gmVoiceFor(song) : undefined);
+  const dryMono = renderDry(song, opts, voiceResolver(song, opts));
   let dry = dryMono;
   if (opts.sympathetic) dry = addSympathetic(dry, opts.sympathetic);
   let L = Float32Array.from(dry);
@@ -555,6 +657,7 @@ export function renderStereo(song: Song, opts: RenderOptions = DEFAULT_OPTS): [F
     L = applyReverb(L, opts.reverb, 0); // seed 0
     R = applyReverb(R, opts.reverb, 7); // seed 7 -> different comb lengths
   }
+  if (opts.compress) new Compressor(opts.compress).processStereo(L, R);
   const g = masterGain(dryMono, Math.max(peakOf(L), peakOf(R)));
   for (let k = 0; k < L.length; k++) L[k] *= g;
   for (let k = 0; k < R.length; k++) R[k] *= g;
@@ -920,6 +1023,15 @@ if (import.meta.filename === process.argv[1]) {
         : undefined,
     gm: has("--gm"),
     drums: has("--drums"),
+    compress:
+      has("--compress") || has("--comp-threshold") || has("--comp-ratio")
+        ? {
+            threshold: Number(flag("comp-threshold", "-18")),
+            ratio: Number(flag("comp-ratio", "3")),
+            attack: Number(flag("comp-attack", "0.005")),
+            release: Number(flag("comp-release", "0.12")),
+          }
+        : undefined,
   };
 
   // no file given -> fall back to the bundled, hardcoded song data.

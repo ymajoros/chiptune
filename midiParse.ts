@@ -66,10 +66,9 @@ export function parseMidi(path: string): Song {
 }
 
 /**
- * Parse an in-memory SMF. `data` is a Node Buffer on the CLI, or any Buffer-like
- * view (see the browser `parseMidiBuffer`) exposing indexing, `.length`,
- * `readUInt16BE`, `readUInt32BE` and `toString(enc, start, end)`. This is the
- * platform-independent core; `parseMidi(path)` is the Node file wrapper.
+ * Platform-independent MIDI parser: takes an already-loaded buffer (Node
+ * `Buffer` from the CLI, or a small Buffer-like `Uint8Array` view in the
+ * browser — see web/browserMidi.ts) so the same parser runs in both places.
  */
 export function parseMidiData(data: Buffer): Song {
   // ---- header chunk ----

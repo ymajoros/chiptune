@@ -58,6 +58,32 @@
       th { color: var(--muted); font-weight: 600; }
       .filelabel { color: var(--muted); }
       h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 0 0 10px; }
+      #tracks table { font-size: 12px; }
+      #tracks td, #tracks th { padding: 4px 6px; white-space: nowrap; }
+      #tracks select { padding: 3px 6px; font-size: 12px; max-width: 150px; }
+      #tracks input[type="range"] { width: 72px; vertical-align: middle; }
+      .mixbtn { padding: 2px 8px; font-size: 12px; border-radius: 6px; min-width: 30px; }
+      .mixbtn.on-mute { background: #7a2233; border-color: #b5179e; color: #fff; }
+      .mixbtn.on-solo { background: #2a5a2a; border-color: #8ac926; color: #fff; }
+      .cellval { color: var(--muted); font-variant-numeric: tabular-nums; display: inline-block; min-width: 26px; }
+      .editbtn { padding: 2px 8px; font-size: 12px; border-radius: 6px; }
+      .editbtn.editing { border-color: var(--accent); color: var(--accent); }
+      /* instrument editor */
+      #instEditor .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px 18px; margin-top: 8px; }
+      #instEditor .fld { display: flex; flex-direction: column; gap: 3px; }
+      #instEditor .fld > label { color: var(--muted); font-size: 12px; }
+      #instEditor .fld .rowin { display: flex; align-items: center; gap: 8px; }
+      #instEditor .fld input[type="range"] { flex: 1; }
+      #instEditor h3 { font-size: 13px; margin: 6px 0 2px; color: var(--fg); }
+      #harmList { display: flex; flex-direction: column; gap: 4px; }
+      #harmList .hrow { display: flex; align-items: center; gap: 6px; }
+      #harmList input { width: 70px; }
+      /* piano */
+      #piano { position: relative; height: 120px; user-select: none; margin-top: 6px; overflow-x: auto; white-space: nowrap; }
+      .pkey { position: relative; display: inline-block; width: 34px; height: 120px; background: #f3f3f3; border: 1px solid #333; border-radius: 0 0 5px 5px; vertical-align: top; cursor: pointer; }
+      .pkey.black { width: 22px; height: 74px; background: #16181f; margin: 0 -11px; z-index: 2; border-color: #000; }
+      .pkey.down { background: var(--accent); }
+      .pkey.black.down { background: #2a7ea0; }
     </style>
   </head>
   <body>
@@ -82,8 +108,13 @@
           <label class="chk"><input type="checkbox" id="gm" checked /> GM multi-instrument</label>
           <label class="chk"><input type="checkbox" id="drums" checked /> Drums</label>
           <label class="chk"><input type="checkbox" id="stereo" checked /> Stereo</label>
+          <label class="chk"><input type="checkbox" id="compress" checked /> Compressor</label>
+        </div>
+        <div class="row">
           <label class="chk"><input type="checkbox" id="reverb" checked /> Reverb</label>
-          <span>mix <input type="range" id="reverbMix" min="0" max="1" value="0.3" step="0.05" style="width:110px" /> <span class="time" id="reverbMixVal">0.30</span></span>
+          <span>return <input type="range" id="reverbMix" min="0" max="1" value="0.5" step="0.05" style="width:100px" /> <span class="time" id="reverbMixVal">0.50</span></span>
+          <label class="chk"><input type="checkbox" id="delay" /> Delay</label>
+          <span>mix <input type="range" id="delayMix" min="0" max="1" value="0.35" step="0.05" style="width:100px" /> <span class="time" id="delayMixVal">0.35</span></span>
         </div>
         <div class="row" id="voiceRow">
           <label class="chk">Voice preset <select id="voice"></select></label>
@@ -100,8 +131,29 @@
       </div>
 
       <div class="panel">
-        <h2>Tracks / GM instruments</h2>
+        <div class="row" style="justify-content: space-between;">
+          <h2 style="margin:0;">Mixer</h2>
+          <span>
+            <button id="saveCfg" style="padding:4px 12px; font-size:13px;">Save</button>
+            <button id="resetCfg" style="padding:4px 12px; font-size:13px;">Reset to defaults</button>
+          </span>
+        </div>
+        <div class="row"><span class="filelabel" id="cfgStatus"></span></div>
         <div id="tracks"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Instrument editor</h2>
+        <div id="instEditor"><span class="filelabel">Click "Edit" on a channel above to edit its instrument voice.</span></div>
+      </div>
+
+      <div class="panel">
+        <div class="row" style="justify-content: space-between;">
+          <h2 style="margin:0;">Keyboard / audition</h2>
+          <span class="filelabel" id="midiStatus">MIDI: checking…</span>
+        </div>
+        <div id="piano"></div>
+        <div class="row"><span class="filelabel">Plays the voice of the channel being edited (or Acoustic Grand). Click keys, use computer keys A–K / W–U, or connect a MIDI keyboard.</span></div>
       </div>
     </div>
     <script type="module" src="./app.js"></script>
