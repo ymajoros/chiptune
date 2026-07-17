@@ -15,6 +15,7 @@ export interface Voice {
   attack: number;
   release: number;
   gain: number; // per-instrument level (basses loud, flutes soft)
+  foldAbove?: number; // fold notes above this MIDI pitch down an octave
   harmonics?: Harmonic[];
   fm?: FmConfig;
   sub?: SubConfig;
@@ -32,8 +33,9 @@ const FAMILY: Voice[] = [
   { attack: 0.004, release: 0.08, gain: 0.9, fm: fm(1, 6, 0.5, 0) },
   // 1  Chromatic percussion — inharmonic FM bell, long ring
   { attack: 0.003, release: 0.15, gain: 0.8, fm: fm(3.5, 6, 1.2, 0) },
-  // 2  Organ — steady FM, sustained
-  { attack: 0.02, release: 0.06, gain: 0.7, fm: fm(1, 0.9, 0.05, 1) },
+  // 2  Organ — additive DRAWBARS (Hammond is sines at 8'/5⅓'/4'/2⅔'/2'…), which
+  //     is richer and cuts through a mix far better than a thin FM sine did.
+  { attack: 0.015, release: 0.05, gain: 0.95, foldAbove: 81, harmonics: [{ multiple: 2, amp: 0.6 }, { multiple: 3, amp: 0.35 }, { multiple: 4, amp: 0.45 }, { multiple: 6, amp: 0.2 }] },
   // 3  Guitar — plucked Karplus-Strong string
   { attack: 0.003, release: 0.08, gain: 0.95, ks: ks(0.996, 0.5) },
   // 4  Bass — low filtered saw, quick filter env
@@ -65,10 +67,16 @@ const FAMILY: Voice[] = [
 /** Per-program overrides where the family default misses badly. */
 const OVERRIDE: Record<number, Voice> = {
   0: { attack: 0.004, release: 0.08, gain: 0.95, fm: fm(1, 8, 0.35, 0) }, // Acoustic Grand — brighter, faster decay
-  16: { attack: 0.02, release: 0.05, gain: 0.7, fm: fm(1, 1.2, 0.05, 1) }, // Drawbar Organ — a bit richer
-  19: { attack: 0.04, release: 0.1, gain: 0.7, fm: fm(2, 1.5, 0.05, 1) }, // Church Organ — fuller
+  16: { attack: 0.012, release: 0.05, gain: 1.0, foldAbove: 81, harmonics: [{ multiple: 2, amp: 0.7 }, { multiple: 3, amp: 0.4 }, { multiple: 4, amp: 0.5 }, { multiple: 6, amp: 0.25 }, { multiple: 8, amp: 0.15 }] }, // Drawbar Organ — full registration
+  // Percussive Organ — this arrangement doubles it high (C6-E6); the 6'/8' drawbars
+  // there scream past 8kHz and bury the mix, so keep it low and drop the top ranks.
+  17: { attack: 0.006, release: 0.05, gain: 0.6, foldAbove: 81, harmonics: [{ multiple: 2, amp: 0.5 }, { multiple: 3, amp: 0.28 }, { multiple: 4, amp: 0.2 }] },
+  29: { attack: 0.006, release: 0.1, gain: 0.85, sub: sub("saw", 1600, 0.4, 1400, 0.5, 6, 2) }, // Overdrive Guitar — sustained saw
+  19: { attack: 0.05, release: 0.12, gain: 0.85, foldAbove: 81, harmonics: [{ multiple: 2, amp: 0.5 }, { multiple: 3, amp: 0.3 }, { multiple: 4, amp: 0.5 }, { multiple: 5, amp: 0.25 }, { multiple: 8, amp: 0.2 }] }, // Church Organ — fuller, principal ranks
   30: { attack: 0.005, release: 0.08, gain: 0.9, sub: sub("saw", 1800, 0.5, 1500, 0.4, 8, 2) }, // Distortion Guitar
-  33: { attack: 0.006, release: 0.05, gain: 1.15, fm: fm(1, 2, 0.25, 0.2) }, // Finger Bass — rounder
+  // Finger Bass — matched to the record's measured bass: rounded (h2~0.5, fast
+  // harmonic rolloff) and plucked (decays to ~0.2 sustain over ~0.3s).
+  33: { attack: 0.006, release: 0.05, gain: 1.5, fm: fm(1, 2.8, 0.25, 0.28) },
   38: { attack: 0.004, release: 0.05, gain: 1.15, sub: sub("saw", 700, 0.5, 1400, 0.12, 0, 1) }, // Synth Bass 1
   45: { attack: 0.003, release: 0.08, gain: 0.85, ks: ks(0.99, 0.4) }, // Pizzicato Strings — plucked
   46: { attack: 0.003, release: 0.2, gain: 0.85, ks: ks(0.998, 0.35) }, // Orchestral Harp
