@@ -62,8 +62,16 @@ function readVlq(data: Buffer, i: number): [number, number] {
 }
 
 export function parseMidi(path: string): Song {
-  const data = readFileSync(path);
+  return parseMidiData(readFileSync(path));
+}
 
+/**
+ * Parse an in-memory SMF. `data` is a Node Buffer on the CLI, or any Buffer-like
+ * view (see the browser `parseMidiBuffer`) exposing indexing, `.length`,
+ * `readUInt16BE`, `readUInt32BE` and `toString(enc, start, end)`. This is the
+ * platform-independent core; `parseMidi(path)` is the Node file wrapper.
+ */
+export function parseMidiData(data: Buffer): Song {
   // ---- header chunk ----
   if (data.toString("ascii", 0, 4) !== "MThd") throw new Error("not a MIDI file");
   const division = data.readUInt16BE(12);

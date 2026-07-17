@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>chiptune — web MIDI player</title>
+    <style>
+      :root {
+        --bg: #0f1117;
+        --panel: #171a23;
+        --panel2: #1e222d;
+        --fg: #e7e9ee;
+        --muted: #9aa0ad;
+        --accent: #4cc9f0;
+        --border: #2a2f3a;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font: 14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        background: var(--bg);
+        color: var(--fg);
+      }
+      .wrap { max-width: 900px; margin: 0 auto; padding: 24px 16px 64px; }
+      h1 { font-size: 20px; margin: 0 0 4px; }
+      h1 .tag { color: var(--muted); font-weight: 400; font-size: 13px; }
+      .sub { color: var(--muted); margin: 0 0 20px; }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 16px;
+        margin-bottom: 16px;
+      }
+      .row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+      .row + .row { margin-top: 12px; }
+      button {
+        background: var(--panel2);
+        color: var(--fg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 8px 16px;
+        font-size: 15px;
+        cursor: pointer;
+      }
+      button:hover:not(:disabled) { border-color: var(--accent); }
+      button:disabled { opacity: 0.5; cursor: default; }
+      #play { min-width: 96px; }
+      input[type="range"] { accent-color: var(--accent); }
+      #seek { flex: 1; min-width: 160px; }
+      .time { font-variant-numeric: tabular-nums; color: var(--muted); min-width: 44px; }
+      label.chk { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+      select { background: var(--panel2); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; }
+      .status { color: var(--accent); font-size: 13px; min-height: 18px; }
+      canvas { width: 100%; height: 220px; display: block; border-radius: 8px; }
+      table { width: 100%; border-collapse: collapse; font-size: 13px; }
+      th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+      th { color: var(--muted); font-weight: 600; }
+      .filelabel { color: var(--muted); }
+      h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 0 0 10px; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>chiptune <span class="tag">— from-scratch MIDI synth, live in the browser</span></h1>
+      <p class="sub" id="songName">…</p>
+
+      <div class="panel">
+        <div class="row">
+          <button id="play">▶ Play</button>
+          <button id="stop">⏹ Stop</button>
+          <span class="time" id="cur">0:00</span>
+          <input type="range" id="seek" min="0" max="100" value="0" step="0.01" />
+          <span class="time" id="dur">0:00</span>
+        </div>
+        <div class="row"><span class="status" id="status"></span></div>
+      </div>
+
+      <div class="panel">
+        <h2>Controls</h2>
+        <div class="row">
+          <label class="chk"><input type="checkbox" id="gm" checked /> GM multi-instrument</label>
+          <label class="chk"><input type="checkbox" id="drums" checked /> Drums</label>
+          <label class="chk"><input type="checkbox" id="stereo" checked /> Stereo</label>
+          <label class="chk"><input type="checkbox" id="reverb" checked /> Reverb</label>
+          <span>mix <input type="range" id="reverbMix" min="0" max="1" value="0.3" step="0.05" style="width:110px" /> <span class="time" id="reverbMixVal">0.30</span></span>
+        </div>
+        <div class="row" id="voiceRow">
+          <label class="chk">Voice preset <select id="voice"></select></label>
+          <span class="filelabel">(used when GM is off)</span>
+        </div>
+        <div class="row">
+          <label class="filelabel">Load a .mid file: <input type="file" id="file" accept=".mid,.midi,audio/midi" /></label>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Piano roll</h2>
+        <canvas id="roll"></canvas>
+      </div>
+
+      <div class="panel">
+        <h2>Tracks / GM instruments</h2>
+        <div id="tracks"></div>
+      </div>
+    </div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

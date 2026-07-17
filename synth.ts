@@ -14,6 +14,7 @@ import { spawnSync } from "node:child_process";
 import { parseMidi, type Song, type Note } from "./midiParse.ts";
 import { song as bundledSong } from "./songData.ts";
 import { gmVoice, GM_NAMES } from "./gm.ts";
+import { renderDrum } from "./drums.ts";
 
 const SR = 44100; // sample rate
 const DROP_DRUMS = true; // channel 9 = GM percussion; sine drums sound bad
@@ -128,6 +129,7 @@ export interface RenderOptions {
   delay?: Delay; // post-mix echo
   reverb?: Reverb; // post-mix reverb
   gm?: boolean; // render each note with its GM-program voice (multi-instrument)
+  drums?: boolean; // synthesize channel-10 percussion (see drums.ts)
 }
 
 // Vowel formant table: [F1,F2,F3] Hz, matching gains, and bandwidths Hz.
@@ -395,6 +397,7 @@ export interface Voice {
   attack: number;
   release: number;
   gain?: number; // per-voice level (default 1)
+  foldAbove?: number; // fold notes above this MIDI pitch down an octave (organ descants)
   harmonics?: Harmonic[];
   fm?: FmConfig;
   sub?: SubConfig;
@@ -456,10 +459,21 @@ function renderDry(song: Song, opts: RenderOptions, voiceFor?: (note: Note) => V
   const base: Voice = opts; // RenderOptions is a superset of Voice
 
   for (const note of song.notes) {
-    if (DROP_DRUMS && note.channel === 9) continue;
+    if (note.channel === 9) {
+      // channel 10 is GM percussion — synthesized, not pitched (see drums.ts)
+      if (!opts.drums) continue;
+      const tone = renderDrum(note.pitch, note.velocity);
+      const start = Math.floor(note.start * SR);
+      for (let k = 0; k < tone.length && start + k < buf.length; k++) buf[start + k] += tone[k];
+      continue;
+    }
     const n = Math.max(Math.floor(note.dur * SR), 1);
-    const freq = midiToHz(note.pitch);
     const v = voiceFor ? voiceFor(note) : base;
+    // fold implausibly-high notes down an octave (organ descants are often
+    // transcribed an octave too high and end up shrill/dominant)
+    let pitch = note.pitch;
+    if (v.foldAbove) while (pitch > v.foldAbove) pitch -= 12;
+    const freq = midiToHz(pitch);
     const amp = (note.velocity / 127) ** 1.5 * 0.25 * (v.gain ?? 1);
 
     const tone = renderTone(n, freq, amp, v, opts.vibrato);
@@ -905,6 +919,7 @@ if (import.meta.filename === process.argv[1]) {
         ? { room: Number(flag("reverb-room", "0.7")), mix: Number(flag("reverb-mix", "0.3")) }
         : undefined,
     gm: has("--gm"),
+    drums: has("--drums"),
   };
 
   // no file given -> fall back to the bundled, hardcoded song data.

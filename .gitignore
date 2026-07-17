@@ -3,3 +3,8 @@
 # generated intermediates
 song.json
 __pycache__/
+
+# web build
+node_modules/
+web/app.js
+web/app.js.map
