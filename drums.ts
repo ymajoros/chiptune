@@ -39,11 +39,62 @@ function thump(n: number, f0: number, f1: number, pitchTau: number, ampTau: numb
   return out;
 }
 
-/** Decaying filtered noise (hats, cymbals, snare wires). */
+/** Decaying filtered noise (snare wires, air). */
 function noiseBurst(n: number, ampTau: number, hpA: number): Float32Array {
   const out = new Float32Array(n);
   const hp = makeHP(hpA);
   for (let k = 0; k < n; k++) out[k] = hp(rnd()) * Math.exp(-(k / SR) / ampTau);
+  return out;
+}
+
+/** Stateful RBJ band-pass (for the snare's "crack" / tuned noise). */
+function makeBP(fc: number, q: number) {
+  const w0 = (2 * Math.PI * fc) / SR;
+  const alpha = Math.sin(w0) / (2 * q);
+  const a0 = 1 + alpha;
+  const b0 = alpha / a0,
+    b2 = -alpha / a0,
+    a1 = (-2 * Math.cos(w0)) / a0,
+    a2 = (1 - alpha) / a0;
+  let x1 = 0,
+    x2 = 0,
+    y1 = 0,
+    y2 = 0;
+  return (x: number) => {
+    const y = b0 * x + b2 * x2 - a1 * y1 - a2 * y2;
+    x2 = x1;
+    x1 = x;
+    y2 = y1;
+    y1 = y;
+    return y;
+  };
+}
+
+// Six inharmonic ratios — the classic analog-drum trick for a METALLIC timbre.
+// Filtered noise alone reads as "shh"; summing detuned square partials makes the
+// clangy "tss" of a real hi-hat / cymbal (their vibration modes are inharmonic).
+const METAL = [2, 3, 4.16, 5.43, 6.79, 8.21];
+
+/**
+ * Metallic percussion (hats, cymbals, ride): six square oscillators at
+ * inharmonic ratios of `f0`, high-passed, blended with a little noise, decaying.
+ */
+function metallic(n: number, f0: number, ampTau: number, hpA: number, noiseMix: number): Float32Array {
+  const out = new Float32Array(n);
+  const hp = makeHP(hpA);
+  const ph = new Float64Array(6);
+  const inc = METAL.map((r) => (f0 * r) / SR);
+  for (let k = 0; k < n; k++) {
+    let s = 0;
+    for (let o = 0; o < 6; o++) {
+      s += ph[o] < 0.5 ? 1 : -1;
+      ph[o] += inc[o];
+      if (ph[o] >= 1) ph[o] -= 1;
+    }
+    s /= 6;
+    s = (1 - noiseMix) * s + noiseMix * rnd();
+    out[k] = hp(s) * Math.exp(-(k / SR) / ampTau);
+  }
   return out;
 }
 
@@ -60,22 +111,41 @@ export function renderDrum(note: number, velocity: number): Float32Array {
 
   switch (note) {
     case 35: // Acoustic Bass Drum
-    case 36: // Bass Drum 1
-      buf = thump(secs(0.13), 155, 65, 0.022, 0.08, 0.8);
+    case 36: {
+      // Bass Drum: a sub "thump" (pitch-dropping sine) LAYERED with a short
+      // band-passed "beater click" ~2.8kHz — the click is what makes a kick read
+      // as a real drum being struck rather than a synth boom.
+      const n = secs(0.13);
+      const sub = thump(n, 155, 62, 0.022, 0.08, 0);
+      const bp = makeBP(2800, 0.8);
+      buf = new Float32Array(n);
+      for (let k = 0; k < n; k++) {
+        const click = k < secs(0.012) ? bp(rnd()) * Math.exp(-(k / SR) / 0.004) : 0;
+        buf[k] = sub[k] + 0.5 * click;
+      }
       gain = 0.6;
       break;
+    }
     case 37: // Side Stick
       buf = thump(secs(0.06), 1800, 1200, 0.004, 0.03, 1.2);
       gain = 0.7;
       break;
     case 38: // Acoustic Snare
     case 40: {
-      // Electric Snare: body tones + noise wires
-      const n = secs(0.2);
-      const body = thump(n, 330, 180, 0.05, 0.12, 0);
-      const wires = noiseBurst(n, 0.11, 0.35);
+      // Snare = a tuned body (two decaying tones) + the wire "crack": noise
+      // band-passed around 3kHz (not just high-passed), which gives the sharp
+      // snap instead of a wash.
+      const n = secs(0.18);
+      const body = thump(n, 330, 185, 0.04, 0.1, 0);
+      const bp = makeBP(3200, 0.7);
+      const hp = makeHP(0.3);
       buf = new Float32Array(n);
-      for (let k = 0; k < n; k++) buf[k] = 0.4 * body[k] + 0.95 * wires[k];
+      for (let k = 0; k < n; k++) {
+        const t = k / SR;
+        const crack = bp(rnd()) * Math.exp(-t / 0.09);
+        const air = hp(rnd()) * Math.exp(-t / 0.05); // top-end sizzle
+        buf[k] = 0.35 * body[k] + 0.9 * crack + 0.25 * air;
+      }
       gain = 1.05;
       break;
     }
@@ -92,32 +162,31 @@ export function renderDrum(note: number, velocity: number): Float32Array {
       gain = 0.9;
       break;
     }
-    case 42: // Closed Hi-Hat
+    case 42: // Closed Hi-Hat — metallic, tight decay
     case 44: // Pedal Hi-Hat
-      buf = noiseBurst(secs(0.05), 0.03, 0.75);
-      gain = 0.45;
+      buf = metallic(secs(0.05), 1150, 0.028, 0.55, 0.35);
+      gain = 0.4;
       break;
-    case 46: // Open Hi-Hat
-      buf = noiseBurst(secs(0.3), 0.12, 0.7);
-      gain = 0.5;
+    case 46: // Open Hi-Hat — metallic, long decay
+      buf = metallic(secs(0.35), 1150, 0.14, 0.55, 0.35);
+      gain = 0.42;
       break;
-    case 49: // Crash 1
+    case 49: // Crash 1 — dense metallic wash, long
     case 52: // Chinese
     case 55: // Splash
     case 57: // Crash 2
-      buf = noiseBurst(secs(1.2), 0.5, 0.55);
-      gain = 0.45;
+      buf = metallic(secs(1.3), 900, 0.55, 0.4, 0.5);
+      gain = 0.4;
       break;
-    case 51: // Ride 1
+    case 51: // Ride — metallic ping (bell + shimmer)
     case 53: // Ride Bell
     case 59: {
-      // Ride 2: brighter noise + a bell tone
       const n = secs(0.5);
-      const bell = thump(n, 2400, 2400, 1, 0.3, 0);
-      const wash = noiseBurst(n, 0.35, 0.6);
+      const bell = thump(n, 2400, 2400, 1, 0.35, 0); // the "ping"
+      const shimmer = metallic(n, 1400, 0.3, 0.5, 0.4);
       buf = new Float32Array(n);
-      for (let k = 0; k < n; k++) buf[k] = 0.25 * bell[k] + 0.5 * wash[k];
-      gain = 0.4;
+      for (let k = 0; k < n; k++) buf[k] = 0.3 * bell[k] + 0.55 * shimmer[k];
+      gain = 0.42;
       break;
     }
     case 54: // Tambourine

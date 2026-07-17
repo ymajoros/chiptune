@@ -58,6 +58,7 @@ export interface SubConfig {
   envDecay: number; // seconds; how fast the cutoff falls back to base
   detune: number; // unison spread, cents
   voices: number; // unison oscillator count
+  drive?: number; // waveshaping distortion (1 = clean; >1 crunches). tanh soft-clip pre-filter.
 }
 
 /**
@@ -265,6 +266,7 @@ function renderSub(
   }
 
   const square = sub.wave === "square";
+  const drive = sub.drive ?? 1;
   const envDecaySamples = Math.max(sub.envDecay * SR, 1);
   const q1 = Math.max(2 * (1 - sub.resonance), 0.05); // damping; lower -> more resonant
   let low = 0;
@@ -290,6 +292,11 @@ function renderSub(
       phases[v] = ph;
     }
     s /= nv;
+
+    // --- distortion: tanh soft-clip BEFORE the filter, like a guitar amp
+    // (preamp overdrive -> the filter then acts as the speaker cabinet, taming
+    // the harsh top). drive 1 is clean; higher folds the saw into a fuzz. ---
+    if (drive > 1) s = Math.tanh(s * drive) / Math.tanh(drive);
 
     // --- resonant low-pass with envelope-swept cutoff ---
     let fc = sub.cutoff + sub.envAmount * Math.exp(-k / envDecaySamples);
