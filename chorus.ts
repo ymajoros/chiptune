@@ -8,49 +8,19 @@
  *
  * The melody track is removed from the backing, because the voice sings it.
  *
- * Run:  node chorus.ts [--transpose -12] [--voice organ] [--play]
+ * Run:  node chorus.ts [--section chorus|verse|all] [--transpose -12]
+ *                      [--voice organ] [--formants 0.88] [--play]
  */
 
 import { song } from "./songData.ts";
 import { render, writeWav, DEFAULT_OPTS, FM_VOICES, SUB_VOICES, type Song, type RenderOptions } from "./synth.ts";
 import { singToBuffer } from "./voice.ts";
+import { SECTIONS } from "./lyrics.ts";
 
 const SR = 44100;
 
-// The refrain hook: a three-short + one-long figure, three times ascending,
-// then "de faire ça". Notes 65..80 of the melody line.
 const MEL_TRACK = 3;
 const MEL_CHAN = 0;
-const FIRST = 65;
-const LAST = 97; // exclusive — the WHOLE chorus, both lines (32 notes)
-
-/**
- * The whole chorus:
- *   "Je vois la mer, je vois la mer, je vois la mer par' ça
- *    À un enfant le temps vraiment ce que chante le vent"
- *
- * Sung, not written: singer elides the schwas — "par sa", not a prim
- * "de faire ça". "-" is a melisma (hold the syllable across another note);
- * lyrics never line up one-syllable-per-note.
- *
- * Note "faire ça" resyllabifies to /fɛ.ʁsa/ — the R migrates onto the next
- * syllable's onset, which is what French connected speech actually does.
- */
-const LYRICS = [
-  // "." = syllable boundary (explicit — lets a consonant be a CODA),
-  // "-" = melisma (hold this syllable across one more note).
-  "Z @ . v w a . l a . m E R .", //  je vois la mer           65-68
-  "Z @ . v w a . l a . m E R .", //  je vois la mer           69-72
-  "Z @ . v w a . l a . m E R .", //  je vois la mer           73-76
-  "l w E~ . - l a -", //          par sa  /paʁ.sa/     77-80
-  "u . v a . l @ . v A~ - .", //     à un le vent           81-85
-  "l @ . t A~ .", //            le temps                86-87
-  "s A~ . v a .", //             vrai-ment                88-89
-  "s k @ .", //                    c'que  (elided /skə/)    90
-  "d i z .", //                    disent /diz/ - no schwa  91
-  "l e .", //                      les                      92
-  "f E~ - - -", //               fiiiin (3 melismas)   93-96
-].join(" ");
 
 function flag(name: string, fallback: string): string {
   const i = process.argv.indexOf(`--${name}`);
@@ -60,7 +30,15 @@ function flag(name: string, fallback: string): string {
 const transpose = Number(flag("transpose", "-12")); // an octave down by default
 const voiceName = flag("voice", "organ");
 const formants = Number(flag("formants", "0.88")); // <1 = longer vocal tract = male
-const outFile = flag("out", "chorus.wav");
+const sectionName = flag("section", "chorus");
+const section = SECTIONS[sectionName];
+if (!section) {
+  console.error(`unknown --section "${sectionName}"; options: ${Object.keys(SECTIONS).join(", ")}`);
+  process.exit(1);
+}
+const FIRST = section.first;
+const LAST = section.last;
+const outFile = flag("out", `${section.name}.wav`);
 
 // ---- melody + window ----
 const mel = song.notes
@@ -100,12 +78,13 @@ const opts: RenderOptions = {
   sub: SUB_VOICES[voiceName],
 };
 
-console.log(`chorus ${t0.toFixed(2)}s..${t1.toFixed(2)}s (${(t1 - t0).toFixed(2)}s)`);
+console.log(`[${section.name}] ${t0.toFixed(2)}s..${t1.toFixed(2)}s (${(t1 - t0).toFixed(2)}s)`);
+console.log(`text: ${section.text}`);
 console.log(`backing: ${backingNotes.length} notes, voice: ${voiceName}`);
 console.log(`lead: ${notes.length} notes, transpose ${transpose}, formants x${formants} (male)`);
 
 const music = render(backing, opts);
-const lead = singToBuffer(LYRICS.trim().split(/\s+/), notes, formants);
+const lead = singToBuffer(section.lyrics.trim().split(/\s+/), notes, formants);
 
 // ---- mix ----
 const n = Math.max(music.length, lead.length);
