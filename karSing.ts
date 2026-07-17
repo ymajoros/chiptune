@@ -21,7 +21,7 @@
 
 import { parseMidi, type Song } from "./midiParse.ts";
 import { render, writeWav, DEFAULT_OPTS, FM_VOICES, SUB_VOICES, type RenderOptions } from "./synth.ts";
-import { singTimed } from "./voice.ts";
+import { singToBuffer, singTimed } from "./voice.ts";
 import { LYRICS } from "./songLyrics.ts";
 
 const SR = 44100;
@@ -41,8 +41,14 @@ if (!path) {
   process.exit(1);
 }
 
-const transpose = Number(flag("transpose", "-12"));
-const formants = Number(flag("formants", "0.88"));
+let transpose = Number(flag("transpose", "-24"));
+// transpose only in whole octaves, or the voice clashes with the backing harmony
+if (transpose % 12 !== 0) {
+  const snapped = Math.round(transpose / 12) * 12;
+  console.warn(`--transpose ${transpose} is not an octave; snapping to ${snapped} to stay in key`);
+  transpose = snapped;
+}
+const formants = Number(flag("formants", "0.86")); // octave-lower singer; pitch stays octave-aligned
 const voiceName = flag("voice", "organ");
 const outFile = flag("out", "karsing.wav");
 
@@ -56,23 +62,97 @@ console.log(song.meta.filter((m) => m.startsWith("@T") || m.startsWith("@L")).jo
 const from = Number(flag("from", String(LYRICS[0][0] / 1000 - 0.5)));
 const to = Number(flag("to", String(LYRICS[LYRICS.length - 1][0] / 1000 + 3)));
 
-// ---- syllables -> singable items, from the pre-generated (editable) table ----
-const rows = LYRICS.filter((r) => r[0] / 1000 >= from && r[0] / 1000 <= to);
-const items: { phonemes: string[]; start: number; dur: number; midi: number }[] = [];
-rows.forEach((r, i) => {
-  const [ms, , phon, midi, brk] = r;
-  const next = rows[i + 1];
-  let dur = next ? next[0] / 1000 - ms / 1000 : 0.6;
-  if (next && next[4]) dur = Math.min(dur, 0.9); // clip before a line/para break
-  dur = Math.min(Math.max(dur, 0.08), 2.5);
-  if (!phon.trim()) return; // rows left empty in songLyrics.ts are skipped
-  items.push({ phonemes: phon.trim().split(/\s+/), start: ms / 1000 - from, dur, midi: midi + transpose });
-});
+// ---- timing model, chosen by density ---------------------------------------
+// The melody track is a simplified INSTRUMENTAL lead, not the vocal line. When
+// it has ~one note per syllable (the refrain) we follow it for pitch+rhythm.
+// But the verse has 81 syllables over 65 lead notes — following it would cram
+// two syllables onto a note and shove others >1s from where they're sung. There
+// the .kar's own onsets ARE the vocal rhythm, so we use those and take pitch
+// from whatever melody note is sounding at each syllable.
+const allMel = parseMidi(path).notes
+  .filter((n) => n.track === 3 && n.channel === 0)
+  .sort((a, b) => a.start - b.start);
+const rows = LYRICS.filter((r) => r[0] / 1000 >= from - 0.15 && r[0] / 1000 <= to).filter((r) => r[2].trim());
 
-console.log(`${rows.length} syllables in ${from.toFixed(1)}s..${to.toFixed(1)}s`);
+const forced = flag("time", ""); // "kar" | "lead" | "" (auto per section)
+const SR2 = 44100;
+
+/** Pitch = the melody note sounding at time t (a held note spans many syllables), else nearest. */
+function pitchAt(t: number): number {
+  const sounding = allMel.find((n) => t >= n.start - 0.03 && t < n.start + n.dur);
+  if (sounding) return sounding.pitch;
+  let best = allMel[0];
+  let bd = Infinity;
+  for (const n of allMel) {
+    const d = Math.abs(n.start - t);
+    if (d < bd) { bd = d; best = n; }
+  }
+  return best.pitch;
+}
+
+/** Render one section [a,b) with the chosen timing model; buffer starts at t=0. */
+function renderSection(secRows: typeof rows, a: number, b: number): { buf: Float32Array; mode: string } {
+  const secMel = allMel.filter((n) => n.start >= a - 0.05 && n.start < b);
+  let aligned = 0;
+  for (const r of secRows) {
+    const t = r[0] / 1000;
+    if (secMel.some((n) => Math.abs(n.start - t) < 0.07)) aligned++;
+  }
+  const onsetFrac = secRows.length ? aligned / secRows.length : 0;
+  const useKar = forced ? forced === "kar" : onsetFrac < 0.7;
+  if (useKar || secMel.length === 0) {
+    // .kar onsets = the real sung rhythm; duration = gap to the next syllable.
+    const items = secRows.map((r, i) => {
+      const t = r[0] / 1000;
+      const next = secRows[i + 1];
+      let dur = next ? next[0] / 1000 - t : 0.6;
+      if (next && next[4]) dur = Math.min(dur, 0.9);
+      return { phonemes: r[2].trim().split(/\s+/), start: t - a, dur: Math.min(Math.max(dur, 0.08), 2.5), midi: pitchAt(t) + transpose };
+    });
+    return { buf: singTimed(items, formants), mode: "kar" };
+  }
+  // lead-following: melody notes drive pitch+rhythm; kar assigns syllable->note.
+  const perNote: string[][] = secMel.map(() => []);
+  let ni = 0;
+  for (const r of secRows) {
+    const t = r[0] / 1000;
+    while (ni < secMel.length - 1 && Math.abs(secMel[ni + 1].start - t) <= Math.abs(secMel[ni].start - t)) ni++;
+    perNote[ni].push(r[2].trim());
+  }
+  const toks: string[] = [];
+  const noteList: { midi: number; dur: number }[] = [];
+  let started = false;
+  secMel.forEach((n, i) => {
+    const dur = i < secMel.length - 1 ? secMel[i + 1].start - n.start : n.dur;
+    noteList.push({ midi: n.pitch + transpose, dur });
+    const sy = perNote[i];
+    if (sy.length === 0) { if (started) toks.push("-"); else toks.push("_", "."); }
+    else { started = true; sy.forEach((syl, k) => { toks.push(...syl.split(/\s+/)); if (k < sy.length - 1) toks.push("="); }); toks.push("."); }
+  });
+  return { buf: singToBuffer(toks, noteList, formants), mode: "lead" };
+}
+
+// Split the window into sections at paragraph breaks — a verse and a refrain
+// want DIFFERENT timing models, so choosing one mode over the whole song fails.
+// Each paragraph picks its own by its own syllable/note density.
+const bounds: number[] = [from];
+for (const r of rows) if (r[4] === "para" && r[0] / 1000 > from + 0.5) bounds.push(r[0] / 1000);
+bounds.push(to);
+
+const lead = new Float32Array(Math.ceil((to - from) * SR2) + SR2);
+const modes: string[] = [];
+for (let si = 0; si < bounds.length - 1; si++) {
+  const a = bounds[si];
+  const b = bounds[si + 1];
+  const secRows = rows.filter((r) => r[0] / 1000 >= a - 0.05 && r[0] / 1000 < b);
+  if (!secRows.length) continue;
+  const { buf, mode } = renderSection(secRows, a, b);
+  modes.push(mode);
+  const off = Math.floor((a - from) * SR2);
+  for (let k = 0; k < buf.length && off + k < lead.length; k++) lead[off + k] += buf[k];
+}
+console.log(`${rows.length} syllables in ${bounds.length - 1} sections -> [${modes.join(", ")}]`);
 console.log(`transpose ${transpose}, formants x${formants}`);
-
-const lead = singTimed(items, formants);
 
 // ---- backing: everything but the melody line, cropped to the window ----
 let out = lead;
@@ -81,7 +161,7 @@ if (!has("--dry")) {
     .filter((n) => !(n.track === 3 && n.channel === 0))
     .filter((n) => n.start < to && n.start + n.dur > from)
     .map((n) => ({ ...n, start: Math.max(0, n.start - from), dur: Math.min(n.dur, to - n.start) }));
-  const backing: Song = { ppq: song.ppq, tempoBpm: song.tempoBpm, duration: to - from, notes: backingNotes, lyrics: [], meta: [] };
+  const backing: Song = { ppq: song.ppq, tempoBpm: song.tempoBpm, duration: to - from, notes: backingNotes, lyrics: [], meta: [], programs: [] };
   const opts: RenderOptions = { ...DEFAULT_OPTS, fm: FM_VOICES[voiceName], sub: SUB_VOICES[voiceName] };
   const music = render(backing, opts);
   const n = Math.max(music.length, lead.length);

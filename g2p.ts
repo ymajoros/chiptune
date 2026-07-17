@@ -26,8 +26,8 @@ const RULES: [string, string[]][] = [
   ["oi", ["w", "a"]],
   ["in", ["E~"]],
   ["im", ["E~"]],
-  ["un", ["E~"]],
-  ["um", ["E~"]],
+  ["un", ["9~"]],
+  ["um", ["9~"]],
   ["an", ["A~"]],
   ["am", ["A~"]],
   ["en", ["A~"]],
@@ -73,7 +73,7 @@ const SINGLE: Record<string, string[]> = {
 };
 
 /** Every phoneme that is a vowel — used to avoid stripping a syllable to nothing. */
-const VOWELS = new Set(["a", "e", "E", "i", "o", "O", "u", "y", "2", "@", "A~", "O~", "E~"]);
+const VOWELS = new Set(["a", "e", "E", "i", "o", "O", "u", "y", "2", "@", "A~", "O~", "E~", "9~"]);
 
 /** Consonants commonly silent at the end of a French word. */
 const SILENT_FINAL = ["t", "d", "s", "z", "p", "x", "n"];
@@ -91,6 +91,12 @@ export function frenchSyllable(raw: string, wordEnd: boolean): string[] {
     .replace(/[’']/g, "'")
     .trim();
   if (!s) return [];
+
+  const FUNC: Record<string, string[]> = {
+    les: ["l", "e"], des: ["d", "e"], mes: ["m", "e"], tes: ["t", "e"],
+    ses: ["s", "e"], ces: ["s", "e"], es: ["e"], et: ["e"], est: ["E"],
+  };
+  if (wordEnd && FUNC[s]) return FUNC[s];
 
   const out: string[] = [];
   let i = 0;
@@ -115,7 +121,8 @@ export function frenchSyllable(raw: string, wordEnd: boolean): string[] {
     const next = s[i + 1] ?? "";
     // NB: "".includes("") is true, so guard `next` — a word-final c/g has no
     // next letter and is hard (/k/, /g/), not soft (/s/, /ʒ/).
-    if (c === "c") out.push(next && "eiyéè".includes(next) ? "s" : "k");
+    // c' is elided "ce" -> /s/ ("c'que" = /skə/); else soft before e/i/y.
+    if (c === "c") out.push(next === "'" ? "s" : next && "eiyéè".includes(next) ? "s" : "k");
     else if (c === "g") out.push(next && "eiyéè".includes(next) ? "Z" : "g");
     else if (c === "s") {
       // s between vowels is /z/

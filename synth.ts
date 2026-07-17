@@ -11,8 +11,9 @@
 
 import { writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { parseMidi, type Song } from "./midiParse.ts";
+import { parseMidi, type Song, type Note } from "./midiParse.ts";
 import { song as bundledSong } from "./songData.ts";
+import { gmVoice, GM_NAMES } from "./gm.ts";
 
 const SR = 44100; // sample rate
 const DROP_DRUMS = true; // channel 9 = GM percussion; sine drums sound bad
@@ -126,6 +127,7 @@ export interface RenderOptions {
   sympathetic?: Sympathetic; // tuned resonator bank (applied to dry, before delay/reverb)
   delay?: Delay; // post-mix echo
   reverb?: Reverb; // post-mix reverb
+  gm?: boolean; // render each note with its GM-program voice (multi-instrument)
 }
 
 // Vowel formant table: [F1,F2,F3] Hz, matching gains, and bandwidths Hz.
@@ -388,51 +390,79 @@ function renderKs(tone: Float32Array, ks: KsConfig, freq: number, amp: number): 
   }
 }
 
-/** Build the dry mono mix (all note voices summed), before any effects. */
-function renderDry(song: Song, opts: RenderOptions): Float32Array {
+/** The timbre part of a render: engine + params (a subset of RenderOptions). */
+export interface Voice {
+  attack: number;
+  release: number;
+  gain?: number; // per-voice level (default 1)
+  harmonics?: Harmonic[];
+  fm?: FmConfig;
+  sub?: SubConfig;
+  ks?: KsConfig;
+  formant?: FormantConfig;
+}
+
+/** Synthesize one note's tone (n samples) with a given voice. */
+function renderTone(
+  n: number,
+  freq: number,
+  amp: number,
+  v: Voice,
+  vibrato: Vibrato | undefined,
+): Float32Array {
+  const inc0 = freq / SR;
+  const tone = new Float32Array(n);
+  if (v.ks) {
+    renderKs(tone, v.ks, freq, amp);
+  } else if (v.formant) {
+    renderFormant(tone, v.formant, freq, amp, vibrato);
+  } else if (v.sub) {
+    renderSub(tone, v.sub, freq, amp, vibrato);
+  } else if (v.fm) {
+    const fm = v.fm;
+    const decaySamples = Math.max(fm.decay * SR, 1);
+    let pc = 0;
+    let pm = 0;
+    for (let k = 0; k < n; k++) {
+      const env = fm.sustain + (1 - fm.sustain) * Math.exp(-k / decaySamples);
+      const index = fm.index * env;
+      tone[k] = Math.sin(2 * Math.PI * pc + index * Math.sin(2 * Math.PI * pm)) * amp;
+      const inc = inc0 * vibFactor(vibrato, k);
+      pc += inc;
+      pm += inc * fm.ratio;
+    }
+  } else {
+    const harmonics = v.harmonics ?? [];
+    let ph = 0;
+    for (let k = 0; k < n; k++) {
+      let s = Math.sin(2 * Math.PI * ph);
+      for (const h of harmonics) s += h.amp * Math.sin(2 * Math.PI * h.multiple * ph);
+      tone[k] = s * amp;
+      ph += inc0 * vibFactor(vibrato, k);
+    }
+  }
+  applyEnvelope(tone, v.attack, v.release);
+  return tone;
+}
+
+/**
+ * Build the dry mono mix. `voiceFor` (optional) picks a Voice per note — used to
+ * render a multi-instrument arrangement where each track has its own GM voice.
+ * Without it every note uses the single voice in `opts`.
+ */
+function renderDry(song: Song, opts: RenderOptions, voiceFor?: (note: Note) => Voice): Float32Array {
   const total = Math.floor((song.duration + 0.5) * SR);
   const buf = new Float32Array(total);
-  const { attack, release, harmonics, fm, sub, formant, ks, vibrato } = opts;
+  const base: Voice = opts; // RenderOptions is a superset of Voice
 
   for (const note of song.notes) {
     if (DROP_DRUMS && note.channel === 9) continue;
     const n = Math.max(Math.floor(note.dur * SR), 1);
     const freq = midiToHz(note.pitch);
-    const inc0 = freq / SR; // base phase increment, cycles/sample
-    const amp = (note.velocity / 127) ** 1.5 * 0.25;
+    const v = voiceFor ? voiceFor(note) : base;
+    const amp = (note.velocity / 127) ** 1.5 * 0.25 * (v.gain ?? 1);
 
-    const tone = new Float32Array(n);
-    if (ks) {
-      renderKs(tone, ks, freq, amp);
-    } else if (formant) {
-      renderFormant(tone, formant, freq, amp, vibrato);
-    } else if (sub) {
-      renderSub(tone, sub, freq, amp, vibrato);
-    } else if (fm) {
-      // phase-accumulating FM so vibrato can modulate the pitch per sample.
-      const decaySamples = Math.max(fm.decay * SR, 1);
-      let pc = 0; // carrier phase (cycles)
-      let pm = 0; // modulator phase (cycles)
-      for (let k = 0; k < n; k++) {
-        const env = fm.sustain + (1 - fm.sustain) * Math.exp(-k / decaySamples);
-        const index = fm.index * env;
-        tone[k] = Math.sin(2 * Math.PI * pc + index * Math.sin(2 * Math.PI * pm)) * amp;
-        const inc = inc0 * vibFactor(vibrato, k);
-        pc += inc;
-        pm += inc * fm.ratio;
-      }
-    } else {
-      // phase-accumulating additive (fundamental + harmonics).
-      let ph = 0;
-      for (let k = 0; k < n; k++) {
-        let s = Math.sin(2 * Math.PI * ph);
-        for (const h of harmonics) s += h.amp * Math.sin(2 * Math.PI * h.multiple * ph);
-        tone[k] = s * amp;
-        ph += inc0 * vibFactor(vibrato, k);
-      }
-    }
-    applyEnvelope(tone, attack, release);
-
+    const tone = renderTone(n, freq, amp, v, opts.vibrato);
     const start = Math.floor(note.start * SR);
     for (let k = 0; k < n; k++) buf[start + k] += tone[k]; // <-- additive mixing
   }
@@ -452,9 +482,37 @@ function masterGain(dry: Float32Array, mixPeak: number): number {
   return Math.min(target, clipSafe);
 }
 
+/**
+ * Resolve each note's GM voice from the song's program-change events: the
+ * program in effect for that note's (track, channel) at its start time. Tracks
+ * with no program default to 0 (Acoustic Grand).
+ */
+export function gmVoiceFor(song: Song): (note: Note) => Voice {
+  const cache = new Map<number, Voice>();
+  const get = (prog: number): Voice => {
+    let v = cache.get(prog);
+    if (!v) {
+      v = gmVoice(prog);
+      cache.set(prog, v);
+    }
+    return v;
+  };
+  return (note: Note): Voice => {
+    let prog = 0;
+    let best = -1;
+    for (const p of song.programs) {
+      if (p.track === note.track && p.channel === note.channel && p.time <= note.start + 1e-6 && p.time >= best) {
+        best = p.time;
+        prog = p.program;
+      }
+    }
+    return get(prog);
+  };
+}
+
 /** Mono render: dry mix -> sympathetic -> delay -> reverb, then one linear gain. */
 export function render(song: Song, opts: RenderOptions = DEFAULT_OPTS): Float32Array {
-  const dry = renderDry(song, opts);
+  const dry = renderDry(song, opts, opts.gm ? gmVoiceFor(song) : undefined);
   let out = dry;
   if (opts.sympathetic) out = addSympathetic(out, opts.sympathetic);
   if (opts.delay) out = applyDelay(out, opts.delay);
@@ -470,7 +528,7 @@ export function render(song: Song, opts: RenderOptions = DEFAULT_OPTS): Float32A
  * Returns [left, right].
  */
 export function renderStereo(song: Song, opts: RenderOptions = DEFAULT_OPTS): [Float32Array, Float32Array] {
-  const dryMono = renderDry(song, opts);
+  const dryMono = renderDry(song, opts, opts.gm ? gmVoiceFor(song) : undefined);
   let dry = dryMono;
   if (opts.sympathetic) dry = addSympathetic(dry, opts.sympathetic);
   let L = Float32Array.from(dry);
@@ -846,6 +904,7 @@ if (import.meta.filename === process.argv[1]) {
       has("--reverb") || has("--reverb-room") || has("--reverb-mix")
         ? { room: Number(flag("reverb-room", "0.7")), mix: Number(flag("reverb-mix", "0.3")) }
         : undefined,
+    gm: has("--gm"),
   };
 
   // no file given -> fall back to the bundled, hardcoded song data.
@@ -864,8 +923,16 @@ if (import.meta.filename === process.argv[1]) {
       couple: Number(flag("symp-couple", "0.03")),
     };
   }
+  if (opts.gm) {
+    const byProg = new Map<number, number>();
+    for (const p of song.programs) byProg.set(p.program, (byProg.get(p.program) ?? 0) + 1);
+    const list = [...byProg.keys()].sort((a, b) => a - b).map((p) => `${p}:${GM_NAMES[p]}`);
+    console.log(`GM: ${song.programs.length} program(s) -> ${list.join(", ") || "(none; defaulting to Acoustic Grand)"}`);
+  }
   const tag = voiceName ? ` (${voiceName})` : "";
-  const timbre = opts.ks
+  const timbre = opts.gm
+    ? "GM multi-instrument"
+    : opts.ks
     ? `KS${tag} decay=${opts.ks.decay} damping=${opts.ks.damping}`
     : opts.formant
     ? `FORMANT${tag} vowel=${opts.formant.vowel} choir=${opts.formant.voices}@${opts.formant.detune}c`

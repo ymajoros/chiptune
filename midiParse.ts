@@ -32,6 +32,14 @@ export interface Lyric {
   break: "" | "line" | "para";
 }
 
+/** A General MIDI program (instrument) selection, stamped at the tick it takes effect. */
+export interface Program {
+  time: number; // seconds
+  track: number;
+  channel: number;
+  program: number; // GM program number 0..127
+}
+
 export interface Song {
   ppq: number;
   tempoBpm: number;
@@ -39,6 +47,7 @@ export interface Song {
   notes: Note[];
   lyrics: Lyric[]; // empty unless the file is a .kar
   meta: string[]; // @-tags: title, artist, language...
+  programs: Program[]; // GM program-change events (empty if none)
 }
 
 /** Read a MIDI variable-length quantity; returns [value, nextIndex]. */
@@ -68,6 +77,7 @@ export function parseMidi(path: string): Song {
   // [startTick, endTick, pitch, velocity, channel, track]
   const rawLyrics: [number, string][] = []; // [absTick, syllable]
   const meta: string[] = []; // @-tags from a .kar header
+  const rawPrograms: [number, number, number, number][] = []; // [absTick, track, channel, program]
 
   for (let track = 0; track < ntracks; track++) {
     if (data.toString("ascii", pos, pos + 4) !== "MTrk") throw new Error("bad track header");
@@ -133,8 +143,11 @@ export function parseMidi(path: string): Song {
         }
       } else if (event === 0xa0 || event === 0xb0 || event === 0xe0) {
         i += 2; // 2-byte channel messages
-      } else if (event === 0xc0 || event === 0xd0) {
-        i += 1; // 1-byte channel messages
+      } else if (event === 0xc0) {
+        rawPrograms.push([absTick, track, channel, data[i]]); // program change
+        i += 1;
+      } else if (event === 0xd0) {
+        i += 1; // channel aftertouch
       } else {
         i += 1; // unknown; best-effort skip
       }
@@ -174,11 +187,15 @@ export function parseMidi(path: string): Song {
       return { time: tickToSec(tick), text: raw.replace(/^[\\/]/, ""), break: brk as "" | "line" | "para" };
     });
 
+  const programs: Program[] = rawPrograms
+    .sort((a, b) => a[0] - b[0])
+    .map(([tick, track, channel, program]) => ({ time: tickToSec(tick), track, channel, program }));
+
   notes.sort((a, b) => a.start - b.start);
   const duration = notes.reduce((m, n) => Math.max(m, n.start + n.dur), 0);
   const tempoBpm = Math.round((60_000_000 / tempoEvents[0][1]) * 10) / 10;
 
-  return { ppq, tempoBpm, duration, notes, lyrics, meta };
+  return { ppq, tempoBpm, duration, notes, lyrics, meta, programs };
 }
 
 // run directly:  node midiParse.ts <file.mid>

@@ -70,6 +70,9 @@ const backing: Song = {
   tempoBpm: song.tempoBpm,
   duration: t1 - t0,
   notes: backingNotes,
+  lyrics: [],
+  meta: [],
+  programs: [],
 };
 
 const opts: RenderOptions = {

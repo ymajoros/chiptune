@@ -115,6 +115,7 @@ const PHONEMES: Record<string, Phon> = {
   "A~": { type: "vowel", f: [700, 1100, 2500], bw: NBW, voiced: true, zeroF: 450, nas: 1, dur: 0.13 }, // an
   "O~": { type: "vowel", f: [450, 800, 2500], bw: NBW, voiced: true, zeroF: 340, nas: 1, dur: 0.13 }, // on
   "E~": { type: "vowel", f: [550, 1600, 2500], bw: NBW, voiced: true, zeroF: 400, nas: 1, dur: 0.13 }, // in
+  "9~": { type: "vowel", f: [560, 1450, 2400], bw: NBW, voiced: true, zeroF: 350, nas: 1, dur: 0.13 }, // un (/œ̃/)
   // --- nasal consonants ---
   m: { type: "nasal", f: [250, 1000, 2200], bw: NBW, voiced: true, av: 0.7, zeroF: 750, nas: 1, dur: 0.07 },
   n: { type: "nasal", f: [250, 1700, 2600], bw: NBW, voiced: true, av: 0.7, zeroF: 1600, nas: 1, dur: 0.07 },
@@ -137,16 +138,16 @@ const PHONEMES: Record<string, Phon> = {
   z: { type: "fricative", f: [320, 1750, 2600], voiced: true, av: 0.5, noise: 0.6, poles: [[5800, 1250, 1], [7400, 2300, 0.6]], dur: 0.08 },
   S: { type: "fricative", f: [400, 1800, 2600], voiced: false, noise: 1, poles: [[2400, 550, 1], [3400, 1100, 0.7], [4800, 2100, 0.25]], dur: 0.1 }, // ch
   Z: { type: "fricative", f: [400, 1800, 2600], voiced: true, av: 0.5, noise: 0.6, poles: [[2400, 550, 1], [3400, 1100, 0.7], [4800, 2100, 0.25]], dur: 0.08 }, // j
-  f: { type: "fricative", f: [350, 1100, 2300], voiced: false, noise: 0.2, poles: [[4200, 2000, 0.6], [7000, 2400, 0.5]], dur: 0.055 },
-  v: { type: "fricative", f: [350, 1100, 2300], voiced: true, av: 0.5, noise: 0.13, poles: [[4200, 2000, 0.6], [7000, 2400, 0.5]], dur: 0.05 },
+  f: { type: "fricative", f: [350, 1100, 2300], voiced: false, noise: 0.08, poles: [[4200, 2000, 0.6], [7000, 2400, 0.5]], dur: 0.05 },
+  v: { type: "fricative", f: [350, 1100, 2300], voiced: true, av: 0.5, noise: 0.05, poles: [[4200, 2000, 0.6], [7000, 2400, 0.5]], dur: 0.05 },
   h: { type: "fricative", f: [500, 1500, 2500], voiced: false, noise: 0.5, asp: true, dur: 0.06 },
   // --- stops: expanded into closure + burst at build time ---
   p: { type: "stop", f: [350, 800, 2200], voiced: false, poles: [[900, 1800, 1]], dur: 0.09 },
   b: { type: "stop", f: [350, 800, 2200], voiced: true, poles: [[900, 1800, 1]], dur: 0.08 },
   t: { type: "stop", f: [350, 1750, 2600], voiced: false, poles: [[4000, 1800, 1], [6200, 2300, 0.6]], dur: 0.09 },
   d: { type: "stop", f: [350, 1750, 2600], voiced: true, poles: [[4000, 1800, 1], [6200, 2300, 0.6]], dur: 0.08 },
-  k: { type: "stop", f: [350, 1950, 2250], voiced: false, poles: [[1800, 800, 1], [2600, 1100, 0.6]], dur: 0.09 },
-  g: { type: "stop", f: [350, 1950, 2250], voiced: true, poles: [[1800, 800, 1], [2600, 1100, 0.6]], dur: 0.08 },
+  k: { type: "stop", f: [350, 1950, 2250], voiced: false, poles: [[2400, 700, 1]], dur: 0.09 },
+  g: { type: "stop", f: [350, 1950, 2250], voiced: true, poles: [[2200, 700, 1]], dur: 0.08 },
   // --- silence ---
   _: { type: "silence", f: [500, 1500, 2500], voiced: false, dur: 0.12 },
 };
@@ -234,6 +235,20 @@ function toSegments(tokens: string[], rate: number, durs?: number[], scale = 1):
     if (!p) throw new Error(`unknown phoneme "${tok}"`);
     const bw = p.bw ?? BW;
     const pf: [number, number, number] = [p.f[0] * scale, p.f[1] * scale, p.f[2] * scale];
+    // velar pinch: /k g/ take their F2/F3 and burst from the FOLLOWING vowel's
+    // F2 — high & converged before front vowels, low before back ones. Without
+    // this, "qui" /ki/ reads as labial "pi".
+    let velarBurst = 0;
+    if ((tok === "k" || tok === "g") && i + 1 < tokens.length) {
+      const nv = PHONEMES[tokens[i + 1]];
+      if (nv && nv.type === "vowel") {
+        const vf2 = nv.f[1];
+        const pinch = Math.min(Math.max(vf2 + 250, 1300), 2900); // just above the vowel F2
+        pf[1] = pinch * scale; // F2
+        pf[2] = Math.max(pinch + 250, nv.f[2] * 0.9) * scale; // F3, kept close (pinch)
+        velarBurst = pinch;
+      }
+    }
     const dur = (durs?.[i] ?? p.dur) / rate;
     if (p.type === "stop") {
       // closure: silence (voiced stops keep a faint low "voice bar"), then a burst
@@ -247,12 +262,13 @@ function toSegments(tokens: string[], rate: number, durs?: number[], scale = 1):
        * runs through the cascade, so the formants already gliding toward the
        * next vowel colour it, exactly as a real release does.
        */
-      const bd = Math.min(0.008, dur * 0.15); // burst: 8ms
-      const ad = p.voiced ? Math.min(0.006, dur * 0.1) : Math.min(0.022, dur * 0.3); // VOT
+      const bd = Math.min(0.012, dur * 0.15); // burst: ~12ms
+      const ad = p.voiced ? Math.min(0.005, dur * 0.08) : Math.min(0.006, dur * 0.1); // VOT (French: short-lag)
       const cd = Math.max(0.02, dur - bd - ad); // closure
       segs.push({ f: pf, bw, av: p.voiced ? 0.06 : 0, an: 0, poles: p.poles ?? [], zf: z, nas: nz, tr: 0, sil: false, asp: false, dur: cd });
-      segs.push({ f: pf, bw, av: p.voiced ? 0.2 : 0, an: 0.75, poles: p.poles ?? [], zf: z, nas: nz, tr: 0, sil: false, asp: false, dur: bd });
-      segs.push({ f: pf, bw, av: p.voiced ? 0.5 : 0, an: p.voiced ? 0.15 : 0.5, poles: p.poles ?? [], zf: z, nas: nz, tr: 0, sil: false, asp: true, dur: ad });
+      const burstPoles = velarBurst ? [[velarBurst * scale, 700, 1] as [number, number, number]] : (p.poles ?? []);
+      segs.push({ f: pf, bw, av: p.voiced ? 0.2 : 0, an: 0.32, poles: burstPoles, zf: z, nas: nz, tr: 0, sil: false, asp: false, dur: bd });
+      segs.push({ f: pf, bw, av: p.voiced ? 0.5 : 0.35, an: p.voiced ? 0.12 : 0.12, poles: p.poles ?? [], zf: z, nas: nz, tr: 0, sil: false, asp: true, dur: ad });
     } else {
       segs.push({
         f: pf,
@@ -358,7 +374,7 @@ function renderSegments(segs: Seg[], f0At: (t: number) => number): Float32Array 
     // Ramping to zero at every edge would cut the voice out between two voiced
     // phonemes (a click); crossfading keeps av=1 -> av=1 perfectly continuous
     // while still fading quickly where the phonemes genuinely differ.
-    const half = 0.005; // 10 ms crossfade centred on the boundary
+    const half = 0.008; // 16 ms crossfade centred on the boundary (softer stop/fric abutments)
     const segEnd = segStart + seg.dur;
     let av = seg.av;
     let an = seg.an;
