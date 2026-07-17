@@ -115,6 +115,8 @@ const els = {
   cfgStatus: $("cfgStatus"),
   resetCfg: $("resetCfg") as HTMLButtonElement,
   saveCfg: $("saveCfg") as HTMLButtonElement,
+  saveProject: $("saveProject") as HTMLButtonElement,
+  projectFile: $("projectFile") as HTMLInputElement,
   instEditor: $("instEditor"),
   piano: $("piano"),
   midiStatus: $("midiStatus"),
@@ -292,6 +294,12 @@ function tick(): void {
     scheduled.add(src);
     src.onended = () => { scheduled.delete(src); try { src.disconnect(); } catch {} };
     nextTime += CHUNK / ENGINE_SR;
+  }
+  // keep the transport readout live even if requestAnimationFrame is throttled
+  // (e.g. a backgrounded tab): the scheduler interval drives it too.
+  updateSeek();
+  if (currentTime() >= song.duration - 0.02 && synth && synth.playheadSeconds >= song.duration + 0.4) {
+    stopPlayback();
   }
 }
 
@@ -735,12 +743,23 @@ function onMidi(e: MIDIMessageEvent): void {
 }
 
 // ---- song lifecycle ----
-function openSong(newSong: Song, name: string): void {
+function openSong(newSong: Song, name: string, preset?: SongConfig): void {
   song = newSong;
   songName = name;
   songId = songHash(song, name);
   offset = 0;
-  const had = loadConfig();
+  let had: boolean;
+  if (preset) {
+    for (const k of Object.keys(voiceOverrides)) delete voiceOverrides[k];
+    mixer.clear();
+    Object.assign(voiceOverrides, preset.voiceOverrides ?? {});
+    for (const [k, v] of Object.entries(preset.mixer ?? {})) mixer.set(k, { ...defaultChannelMix(), ...v });
+    for (const c of channelsOf(song)) if (!mixer.has(c.key)) mixer.set(c.key, defaultChannelMix());
+    saveConfig(); // persist the loaded project under its song id
+    had = true;
+  } else {
+    had = loadConfig();
+  }
   synth = new StreamingSynth(song, buildOptions());
   synth.setMixer(mixer);
   els.seek.max = String(song.duration);
@@ -810,6 +829,58 @@ els.file.addEventListener("change", async () => {
   }
 });
 
+// ---- native project format (.chip): a versioned session superset of MIDI ----
+const SESSION_FORMAT = "chiptune-session";
+const SESSION_VERSION = 1;
+interface Session {
+  format: string;
+  version: number;
+  songName: string;
+  song: Song;
+  voiceOverrides: Record<string, VoiceOverride>;
+  mixer: Record<string, ChannelMix>;
+}
+
+els.saveProject.addEventListener("click", () => {
+  const session: Session = {
+    format: SESSION_FORMAT,
+    version: SESSION_VERSION,
+    songName,
+    song,
+    voiceOverrides,
+    mixer: Object.fromEntries(mixer),
+  };
+  const blob = new Blob([JSON.stringify(session)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${songId || "session"}.chip`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  els.cfgStatus.textContent = `Saved project ${a.download}`;
+});
+
+els.projectFile.addEventListener("change", async () => {
+  const f = els.projectFile.files?.[0];
+  if (!f) return;
+  try {
+    const session = JSON.parse(await f.text()) as Session;
+    if (session.format !== SESSION_FORMAT || !session.song || !Array.isArray(session.song.notes)) {
+      throw new Error("not a chiptune session file");
+    }
+    stopPlayback();
+    openSong(session.song, session.songName || f.name, {
+      voiceOverrides: session.voiceOverrides ?? {},
+      mixer: session.mixer ?? {},
+    });
+    els.status.textContent = `Loaded project ${f.name} — ${song.notes.length} notes, ${song.duration.toFixed(1)}s`;
+  } catch (e) {
+    els.status.textContent = `Failed to load project: ${(e as Error).message}`;
+  } finally {
+    els.projectFile.value = "";
+  }
+});
+
 // ---- init ----
 // debug hook (harmless): lets tooling measure a live block's RMS / inspect state
 (window as unknown as { __chip: unknown }).__chip = {
@@ -828,6 +899,12 @@ els.file.addEventListener("change", async () => {
   },
   get mixer() { return mixer; },
   get overrides() { return voiceOverrides; },
+  get ctxState() { return ctx ? ctx.state : "none"; },
+  get ctxTime() { return ctx ? ctx.currentTime : 0; },
+  get transport() { return currentTime(); },
+  get running() { return running; },
+  get scheduledCount() { return scheduled.size; },
+  resumeCtx() { return ctx ? ctx.resume() : Promise.resolve(); },
 };
 els.voiceRow.style.display = els.gm.checked ? "none" : "flex";
 els.reverbMixVal.textContent = Number(els.reverbMix.value).toFixed(2);
