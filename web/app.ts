@@ -36,8 +36,8 @@ import {
 import { song as bundledSong } from "../songData.ts";
 import { GM_NAMES, gmVoice } from "../gm.ts";
 import { parseMidiBuffer } from "./browserMidi.ts";
-import type { Song } from "../midiParse.ts";
-import { StreamingSynth, defaultChannelMix, renderAudition, type ChannelMix } from "./streamingSynth.ts";
+import type { Song, Note } from "../midiParse.ts";
+import { StreamingSynth, defaultChannelMix, PitchedVoice, MASTER_GAIN, type ChannelMix } from "./streamingSynth.ts";
 
 type EngineType = "additive" | "fm" | "sub" | "ks" | "formant";
 
@@ -121,6 +121,9 @@ const els = {
   piano: $("piano"),
   midiStatus: $("midiStatus"),
   kbLayout: $("kbLayout") as HTMLSelectElement,
+  octDown: $("octDown") as HTMLButtonElement,
+  octUp: $("octUp") as HTMLButtonElement,
+  octLabel: $("octLabel"),
   roll: $("roll") as HTMLCanvasElement,
 };
 
@@ -264,8 +267,13 @@ function currentTime(): number {
 }
 
 function ensureCtx(): void {
-  if (!ctx) ctx = new AudioContext({ sampleRate: ENGINE_SR });
-  if (ctx.state === "suspended") ctx.resume();
+  if (!ctx) ctx = new AudioContext({ sampleRate: ENGINE_SR, latencyHint: "interactive" });
+  // An AudioContext starts `suspended` until a user gesture; resume() is a no-op
+  // if already running. Without this, a note triggered from keydown is silent —
+  // a keyboard-first user (who never clicked) would hear nothing at all. A
+  // physical keydown *is* a user gesture, so resuming here unlocks it with no
+  // prior click. resume() rejects if called without activation — swallow that.
+  if (ctx.state === "suspended") ctx.resume().catch(() => {});
 }
 
 function stopScheduled(): void {
@@ -761,48 +769,103 @@ function switchEngine(key: string, engine: EngineType): void {
 }
 
 // ---- on-screen piano + audition ----
-const PIANO_LO = 48, PIANO_HI = 76; // C3..E5
+// The piano spans ~2.4 octaves around middle C. `octaveShift` (in whole octaves)
+// pans that window lower/higher: every rendered key's data-pitch — and the
+// computer-keyboard map — moves by ±12 per octave, so both stay in lockstep.
+const PIANO_LO = 48, PIANO_HI = 76; // C3..E5 at octaveShift 0 (middle C centred)
 const BLACK = new Set([1, 3, 6, 8, 10]);
+const OCT_MIN = -3, OCT_MAX = 3; // keeps every pitch within MIDI 0..127
+const OCT_KEY = "chiptune:octaveShift";
+let octaveShift = 0;
+const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+function noteName(m: number): string { return `${NOTE_NAMES[((m % 12) + 12) % 12]}${Math.floor(m / 12) - 1}`; }
 function buildPiano(): void {
   let html = "";
   for (let p = PIANO_LO; p <= PIANO_HI; p++) {
-    const black = BLACK.has(p % 12);
-    html += `<span class="pkey${black ? " black" : ""}" data-pitch="${p}"></span>`;
+    const pitch = p + octaveShift * 12;
+    if (pitch < 0 || pitch > 127) continue;
+    const black = BLACK.has(pitch % 12);
+    html += `<span class="pkey${black ? " black" : ""}" data-pitch="${pitch}"></span>`;
   }
   els.piano.innerHTML = html;
+}
+/** Center note the map plays with no key held (middle C at shift 0). */
+function updateOctLabel(): void { els.octLabel.textContent = `Center ${noteName(60 + octaveShift * 12)}`; }
+/** Release every held live voice + clear held keys — avoids stuck notes when the
+ *  octave changes mid-hold (the keyup would target the new, un-held pitch). */
+function releaseAllLive(): void {
+  for (const p of [...liveVoices.keys()]) noteOff(p);
+  held.clear();
+  pointerPitch = null;
+}
+function setOctaveShift(v: number): void {
+  const nv = Math.max(OCT_MIN, Math.min(OCT_MAX, v));
+  if (nv === octaveShift) return;
+  releaseAllLive();
+  octaveShift = nv;
+  buildPiano();
+  updateOctLabel();
+  try { localStorage.setItem(OCT_KEY, String(octaveShift)); } catch { /* storage disabled */ }
 }
 function keyEl(pitch: number): HTMLElement | null {
   return els.piano.querySelector(`[data-pitch="${pitch}"]`);
 }
 // Sustaining audition: a note is held for as long as the key/pointer is down.
-const activeNotes = new Map<number, { src: AudioBufferSourceNode; gain: GainNode }>();
+// A single persistent real-time ScriptProcessor sums the currently-held live
+// voices and writes them straight to the output — no pre-render, no 8 s cap, so
+// latency is ~the buffer size and a held note rings indefinitely. Each voice is
+// the exact same stateful PitchedVoice DSP the song path uses.
+const LIVE_BUF = 256; // frames per callback (~6 ms @ 44.1 kHz) -> low latency
+const liveVoices = new Map<number, PitchedVoice>();
+let liveNode: ScriptProcessorNode | null = null;
+let liveScratch = new Float32Array(LIVE_BUF);
+function ensureLiveNode(): void {
+  if (liveNode || !ctx) return;
+  const node = ctx.createScriptProcessor(LIVE_BUF, 0, 2);
+  node.onaudioprocess = (e: AudioProcessingEvent) => {
+    const outL = e.outputBuffer.getChannelData(0);
+    const outR = e.outputBuffer.getChannelData(1);
+    const N = outL.length;
+    // Sum held voices into outL (mono), then fan out to stereo below.
+    outL.fill(0);
+    if (liveVoices.size > 0) {
+      if (liveScratch.length < N) liveScratch = new Float32Array(N);
+      const scratch = liveScratch;
+      for (const [pitch, v] of liveVoices) {
+        v.render(scratch, 0, N);
+        for (let i = 0; i < N; i++) outL[i] += scratch[i];
+        if (v.done) { liveVoices.delete(pitch); keyEl(pitch)?.classList.remove("down"); }
+      }
+    }
+    // Master gain + guard: a single NaN reaching the destination poisons the
+    // whole AudioContext, so force finite, then soft-clamp to [-1, 1].
+    for (let i = 0; i < N; i++) {
+      let s = outL[i] * MASTER_GAIN;
+      if (!Number.isFinite(s)) s = 0;
+      else if (s > 1) s = 1;
+      else if (s < -1) s = -1;
+      outL[i] = s;
+      outR[i] = s;
+    }
+  };
+  node.connect(ctx.destination);
+  liveNode = node;
+}
 function noteOn(pitch: number, velocity = 100): void {
   ensureCtx();
   if (!ctx) return;
-  if (activeNotes.has(pitch)) noteOff(pitch); // retrigger
+  ensureLiveNode();
   const voice = selectedKey ? resolveVoice(selectedKey).voice : gmVoice(0);
-  // render a long note; while held we play through its sustain, releasing early
-  // via our own gain ramp (below). Plucked/decaying voices still decay naturally.
-  const buf = renderAudition(voice, pitch, velocity, 8, buildOptions().vibrato);
-  const ab = ctx.createBuffer(1, buf.length, ENGINE_SR);
-  ab.copyToChannel(buf, 0);
-  const src = ctx.createBufferSource();
-  src.buffer = ab;
-  const gain = ctx.createGain();
-  src.connect(gain).connect(ctx.destination);
-  src.start();
-  src.onended = () => { activeNotes.delete(pitch); keyEl(pitch)?.classList.remove("down"); };
-  activeNotes.set(pitch, { src, gain });
+  // Very long duration -> the voice sustains at its sustain level until release().
+  const note: Note = { start: 0, dur: 3600, pitch, velocity, channel: 0, track: 0 };
+  const v = new PitchedVoice(note, voice, buildOptions().vibrato, "audition", 0);
+  liveVoices.set(pitch, v); // overwrite -> retrigger if already held
   keyEl(pitch)?.classList.add("down");
 }
 function noteOff(pitch: number): void {
-  const a = activeNotes.get(pitch);
-  if (!a || !ctx) return;
-  activeNotes.delete(pitch);
-  const now = ctx.currentTime;
-  a.gain.gain.setValueAtTime(a.gain.gain.value, now);
-  a.gain.gain.linearRampToValueAtTime(0, now + 0.03); // short release -> no click
-  try { a.src.stop(now + 0.05); } catch { /* already stopped */ }
+  const v = liveVoices.get(pitch);
+  if (!v) return;
+  v.release(); // begin release ramp; the callback removes it once the tail ends
   keyEl(pitch)?.classList.remove("down");
 }
 /** One-shot audition (used by live MIDI note-ons and anywhere a hold isn't tracked). */
@@ -844,6 +907,11 @@ const KB_LAYOUT_KEY = "chiptune:kbLayout";
 function activeKeymap(): Record<string, number> {
   return KEYMAPS[els.kbLayout.value] ?? KEYMAPS.qwerty;
 }
+/** MIDI pitch a letter key plays: the map's center-octave pitch + octave shift. */
+function keymapPitch(key: string): number | undefined {
+  const base = activeKeymap()[key];
+  return base === undefined ? undefined : base + octaveShift * 12;
+}
 // restore the persisted layout choice (default QWERTY)
 try {
   const saved = localStorage.getItem(KB_LAYOUT_KEY);
@@ -852,6 +920,14 @@ try {
 els.kbLayout.addEventListener("change", () => {
   try { localStorage.setItem(KB_LAYOUT_KEY, els.kbLayout.value); } catch {}
 });
+// octave shift — buttons move both the on-screen piano and the computer keys
+els.octDown.addEventListener("click", () => setOctaveShift(octaveShift - 1));
+els.octUp.addEventListener("click", () => setOctaveShift(octaveShift + 1));
+// restore the persisted octave choice (default 0 = middle C centred)
+try {
+  const saved = Number(localStorage.getItem(OCT_KEY));
+  if (Number.isFinite(saved)) octaveShift = Math.max(OCT_MIN, Math.min(OCT_MAX, saved | 0));
+} catch { /* storage disabled — keep default */ }
 
 /** True when a form control has focus, so typing shouldn't play notes. */
 function inField(): boolean {
@@ -869,9 +945,24 @@ window.addEventListener("keydown", (e) => {
     togglePlay();
     return;
   }
+  // transport seek shortcuts (not when typing in a field)
+  if (!typing) {
+    const t = currentTime();
+    switch (e.key) {
+      case "Home": e.preventDefault(); seekTo(0); return;
+      case "End": e.preventDefault(); seekTo(song.duration); return;
+      case "ArrowLeft": e.preventDefault(); seekTo(t - 5); return;
+      case "ArrowRight": e.preventDefault(); seekTo(t + 5); return;
+      case "PageUp": e.preventDefault(); seekTo(t + 20); return;
+      case "PageDown": e.preventDefault(); seekTo(t - 20); return;
+      // octave shift for both the on-screen piano and the computer keys
+      case "-": case "_": e.preventDefault(); setOctaveShift(octaveShift - 1); return;
+      case "=": case "+": e.preventDefault(); setOctaveShift(octaveShift + 1); return;
+    }
+  }
   if (typing) return;
   const key = e.key.toLowerCase();
-  const p = activeKeymap()[key];
+  const p = keymapPitch(key);
   if (p === undefined || held.has(key)) return;
   held.add(key);
   noteOn(p); // held until keyup
@@ -879,7 +970,7 @@ window.addEventListener("keydown", (e) => {
 window.addEventListener("keyup", (e) => {
   const key = e.key.toLowerCase();
   if (held.delete(key)) {
-    const p = activeKeymap()[key];
+    const p = keymapPitch(key);
     if (p !== undefined) noteOff(p);
   }
 });
@@ -1120,6 +1211,7 @@ els.voiceRow.style.display = els.gm.checked ? "none" : "flex";
 els.reverbMixVal.textContent = Number(els.reverbMix.value).toFixed(2);
 els.delayMixVal.textContent = Number(els.delayMix.value).toFixed(2);
 buildPiano();
+updateOctLabel();
 initMidi();
 const restored = loadLastSession();
 if (restored) openSong(restored.song, restored.songName);

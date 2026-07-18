@@ -159,6 +159,11 @@
         <div class="row" style="justify-content: space-between;">
           <h2 style="margin:0;">Keyboard / audition</h2>
           <span class="row" style="gap:8px;">
+            <span class="row" style="gap:4px;">
+              <button id="octDown" title="Shift down one octave" style="padding:2px 9px; font-size:13px;">◀ Oct</button>
+              <span class="time" id="octLabel" style="min-width:78px; text-align:center;">Center C4</span>
+              <button id="octUp" title="Shift up one octave" style="padding:2px 9px; font-size:13px;">Oct ▶</button>
+            </span>
             <label class="chk">Layout <select id="kbLayout">
               <option value="qwerty">QWERTY</option>
               <option value="azerty">AZERTY</option>
@@ -167,7 +172,7 @@
           </span>
         </div>
         <div id="piano"></div>
-        <div class="row"><span class="filelabel">Plays the voice of the channel being edited (or Acoustic Grand). Click keys, use computer keys A–K / W–U, or connect a MIDI keyboard.</span></div>
+        <div class="row"><span class="filelabel">Plays the voice of the channel being edited (or Acoustic Grand). Click keys, drag to glide, or use the home-row computer keys (center octave). Shift octave with ◀/▶ above or the <b>−</b>/<b>=</b> keys. Connect a MIDI keyboard too.</span></div>
       </div>
     </div>
     <script type="module" src="./app.js"></script>

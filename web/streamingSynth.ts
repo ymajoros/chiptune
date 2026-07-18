@@ -48,7 +48,7 @@ const midiToHz = (pitch: number): number => 440 * 2 ** ((pitch - 69) / 12);
 // A fixed makeup gain feeding the compressor/limiter. Streaming can't peek at
 // the whole song to peak-normalize (offline's masterGain), so we use a static
 // gain and let the compressor + limiter control the ceiling.
-const MASTER_GAIN = 1.25;
+export const MASTER_GAIN = 1.25;
 const LIMITER: { threshold: number; ratio: number; attack: number; release: number } = {
   threshold: -1,
   ratio: 20,
@@ -172,14 +172,15 @@ function voiceEngine(v: Voice): "add" | "fm" | "sub" | "formant" | "ks" {
   return "add";
 }
 
-class PitchedVoice implements RtVoice {
+export class PitchedVoice implements RtVoice {
   chanKey: string;
   firstOffset: number;
   done = false;
   private k = 0;
-  private readonly n: number;
+  private n: number; // total samples (mutable: live/held release re-times the end)
   private a: number; // attack samples (mutable: live edits)
   private r: number; // release samples
+  private releasing = false; // live-held: release() begun
   private amp: number;
   private readonly inc0: number;
   readonly note: Note; // kept so the mixer can re-resolve this voice on a live edit
@@ -281,6 +282,21 @@ class PitchedVoice implements RtVoice {
     this.a = Math.min(Math.floor(v.attack * SR), this.n >> 1);
     this.r = Math.min(Math.floor(v.release * SR), this.n >> 1);
     this.amp = (this.note.velocity / 127) ** 1.5 * 0.25 * safeGain(v.gain);
+  }
+
+  /**
+   * Begin the release ramp from the CURRENT position (for a live/held note built
+   * with a very long duration). Re-times the note end to `k + r` so env()'s
+   * smoothstep release window starts now; the voice marks itself done once the
+   * ramp finishes. Idempotent. A small floor on r avoids a click if the patch has
+   * zero release. Naturally-decaying engines (KS) keep ringing out regardless.
+   */
+  release(): void {
+    if (this.releasing) return;
+    this.releasing = true;
+    const minR = Math.floor(0.012 * SR); // ~12 ms floor -> no click on cut
+    this.r = Math.max(this.r, minR);
+    this.n = this.k + this.r;
   }
 
   render(scratch: Float32Array, start: number, count: number): void {
