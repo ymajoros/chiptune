@@ -25,7 +25,7 @@ export interface Voice {
 
 const fm = (ratio: number, index: number, decay: number, sustain: number): FmConfig => ({ ratio, index, decay, sustain });
 const sub = (wave: "saw" | "square", cutoff: number, resonance: number, envAmount: number, envDecay: number, detune: number, voices: number, drive = 1): SubConfig => ({ wave, cutoff, resonance, envAmount, envDecay, detune, voices, drive });
-const ks = (decay: number, damping: number, body = 0): KsConfig => ({ decay, damping, body });
+const ks = (decay: number, damping: number, body = 0, stiffness = 0, pick = 0, tone = 1): KsConfig => ({ decay, damping, body, stiffness, pick, tone });
 
 // --- family defaults (program >> 3 selects the family) ---
 const FAMILY: Voice[] = [
@@ -66,7 +66,7 @@ const FAMILY: Voice[] = [
 
 /** Per-program overrides where the family default misses badly. */
 const OVERRIDE: Record<number, Voice> = {
-  0: { attack: 0.002, release: 0.2, gain: 0.95, ks: ks(0.9968, 0.42, 0.3) }, // Acoustic Grand — struck string + soundboard
+  0: { attack: 0.002, release: 0.2, gain: 0.95, ks: ks(0.9968, 0.42, 0.3, 0.42, 0, 0.5) }, // Acoustic Grand — stiff struck string (inharmonic) + soundboard
   16: { attack: 0.012, release: 0.05, gain: 1.0, foldAbove: 81, harmonics: [{ multiple: 2, amp: 0.7 }, { multiple: 3, amp: 0.4 }, { multiple: 4, amp: 0.5 }, { multiple: 6, amp: 0.25 }, { multiple: 8, amp: 0.15 }] }, // Drawbar Organ — full registration
   // Percussive Organ — this arrangement doubles it high (C6-E6); the 6'/8' drawbars
   // there scream past 8kHz and bury the mix, so keep it low and drop the top ranks.
@@ -78,8 +78,8 @@ const OVERRIDE: Record<number, Voice> = {
   // harmonic rolloff) and plucked (decays to ~0.2 sustain over ~0.3s).
   33: { attack: 0.006, release: 0.05, gain: 1.5, fm: fm(1, 2.8, 0.25, 0.28) },
   38: { attack: 0.004, release: 0.05, gain: 1.15, sub: sub("saw", 700, 0.5, 1400, 0.12, 0, 1) }, // Synth Bass 1
-  45: { attack: 0.003, release: 0.08, gain: 0.85, ks: ks(0.99, 0.4) }, // Pizzicato Strings — plucked
-  46: { attack: 0.003, release: 0.2, gain: 0.85, ks: ks(0.998, 0.35) }, // Orchestral Harp
+  45: { attack: 0.003, release: 0.08, gain: 0.85, ks: ks(0.99, 0.4, 0.12, 0.16, 0.25, 0.55) }, // Pizzicato Strings — plucked, bodied
+  46: { attack: 0.003, release: 0.2, gain: 0.85, ks: ks(0.998, 0.35, 0.2, 0.1, 0.22, 0.62) }, // Orchestral Harp — resonant string
   52: { attack: 0.08, release: 0.2, gain: 0.7, formant: { vowel: "a", voices: 4, detune: 12 } }, // Choir Aahs
   53: { attack: 0.08, release: 0.2, gain: 0.7, formant: { vowel: "o", voices: 4, detune: 14 } }, // Voice Oohs
   71: { attack: 0.03, release: 0.08, gain: 0.75, harmonics: [{ multiple: 3, amp: 0.4 }, { multiple: 5, amp: 0.2 }, { multiple: 7, amp: 0.1 }] }, // Clarinet — odd harmonics
@@ -92,8 +92,8 @@ const OVERRIDE: Record<number, Voice> = {
   // clean-electric tone instead.
   // Steel Guitar — steel strings ring longer and brighter than the default
   // pluck; a soft attack rounds off the abrupt KS onset that read as mechanical.
-  24: { attack: 0.004, release: 0.14, gain: 0.9, ks: ks(0.995, 0.6, 0.35) }, // Nylon Guitar — soft, bodied
-  25: { attack: 0.012, release: 0.18, gain: 0.85, ks: ks(0.997, 0.66, 0.32) },
+  24: { attack: 0.004, release: 0.14, gain: 0.9, ks: ks(0.995, 0.5, 0.35, 0.12, 0.2, 0.5) }, // Nylon Guitar — soft finger pluck, bodied
+  25: { attack: 0.01, release: 0.18, gain: 0.85, ks: ks(0.997, 0.56, 0.32, 0.16, 0.15, 0.62) },
   27: { attack: 0.01, release: 0.16, gain: 0.85, fm: fm(1, 2.2, 1.2, 0.4) },
   80: { attack: 0.005, release: 0.06, gain: 0.8, sub: sub("square", 2200, 0.3, 1400, 0.3, 4, 2) }, // Square Lead
 };

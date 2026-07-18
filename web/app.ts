@@ -577,9 +577,13 @@ function renderInstrumentEditor(): void {
     </div>`;
   } else if (engine === "ks") {
     const k = voice.ks!;
-    params = `<h3>Karplus–Strong</h3><div class="grid">
+    params = `<h3>Karplus–Strong (string)</h3><div class="grid">
       ${NUM("Decay", key, "ks", "decay", k.decay, 0.9, 0.9999, 0.001)}
       ${NUM("Damping", key, "ks", "damping", k.damping, 0, 1, 0.02)}
+      ${NUM("Body", key, "ks", "body", k.body ?? 0, 0, 0.6, 0.02)}
+      ${NUM("Stiffness (inharmonic)", key, "ks", "stiffness", k.stiffness ?? 0, 0, 1, 0.02)}
+      ${NUM("Pick position", key, "ks", "pick", k.pick ?? 0, 0, 0.5, 0.02)}
+      ${NUM("Pick hardness (tone)", key, "ks", "tone", k.tone ?? 1, 0, 1, 0.02)}
     </div>`;
   } else {
     const fo = voice.formant!;

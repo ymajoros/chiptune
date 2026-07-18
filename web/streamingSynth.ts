@@ -33,6 +33,8 @@ import {
   Compressor,
   VOWELS,
   gmVoiceFor,
+  ksStringSetup,
+  seedString,
 } from "../synth.ts";
 import { renderDrum } from "../drums.ts";
 
@@ -140,6 +142,8 @@ class PitchedVoice implements RtVoice {
   private fx1 = [0, 0, 0]; private fx2 = [0, 0, 0]; private fy1 = [0, 0, 0]; private fy2 = [0, 0, 0]; // formant biquads
   private co: Biquad[] = []; private A!: { f: number[]; g: number[]; bw: number[] }; private B!: { f: number[]; g: number[]; bw: number[] }; private morph = false;
   private line!: Float32Array; private idx = 0; private ksB = 0; // KS
+  private ksC = 0; private ksDisp = 0; private ksDecay = 1; // tuning/dispersion/decay coeffs
+  private dX1 = 0; private dY1 = 0; private tX1 = 0; private tY1 = 0; private dampPrev = 0; // KS loop filter state
   private ksc1?: Biquad; private ksc2?: Biquad; // KS body resonators
   private kb = [0, 0, 0, 0, 0, 0, 0, 0]; // body biquad state [x1a,x2a,y1a,y2a,x1b,x2b,y1b,y2b]
 
@@ -160,10 +164,9 @@ class PitchedVoice implements RtVoice {
 
     if (v.ks) {
       this.engine = "ks";
-      const L = Math.max(2, Math.round(SR / freq));
-      this.line = new Float32Array(L);
-      for (let i = 0; i < L; i++) this.line[i] = Math.random() * 2 - 1;
-      this.ksB = Math.min(Math.max(v.ks.damping, 0), 1);
+      const setup = ksStringSetup(freq, v.ks);
+      this.line = seedString(setup.Li, v.ks.pick ?? 0, v.ks.tone ?? 1);
+      this.ksB = setup.b; this.ksC = setup.C; this.ksDisp = setup.disp; this.ksDecay = setup.decay;
       if ((v.ks.body ?? 0) > 0) { this.ksc1 = bandpass(110, 2.5); this.ksc2 = bandpass(230, 3); }
     } else if (v.formant) {
       this.engine = "formant";
@@ -336,25 +339,32 @@ class PitchedVoice implements RtVoice {
         break;
       }
       case "ks": {
-        const ks = this.v.ks!;
+        // Extended KS: dispersion all-pass (stiffness) -> tuning all-pass -> damping
+        // -> decay, in the feedback loop; body resonators on the output tap. Mirrors
+        // renderKs() in synth.ts (setup shared via ksStringSetup/seedString).
         const L = this.line.length;
-        const b = this.ksB;
+        const b = this.ksB, C = this.ksC, disp = this.ksDisp, decay = this.ksDecay;
+        const ksBody = this.v.ks?.body ?? 0;
         for (let i = start; i < end; i++) {
           if (this.k >= this.n) { scratch[i] = 0; continue; }
           const cur = this.line[this.idx];
-          const nxt = this.line[(this.idx + 1) % L];
+          const dOut = disp * cur + this.dX1 - disp * this.dY1; this.dX1 = cur; this.dY1 = dOut;
+          const tOut = C * dOut + this.tX1 - C * this.tY1; this.tX1 = dOut; this.tY1 = tOut;
+          const lp = (1 - b) * tOut + b * this.dampPrev; this.dampPrev = tOut;
+          let fb = lp * decay;
+          if (!Number.isFinite(fb)) fb = 0;
+          this.line[this.idx] = fb;
+          this.idx = this.idx + 1 === L ? 0 : this.idx + 1;
           let out = cur;
           if (this.ksc1) { // body resonance (guitar air/wood modes)
-            const kb = this.kb, c1 = this.ksc1, c2 = this.ksc2!, body = ks.body!;
+            const kb = this.kb, c1 = this.ksc1, c2 = this.ksc2!;
             const ya = c1.b0 * cur + c1.b1 * kb[0] + c1.b2 * kb[1] - c1.a1 * kb[2] - c1.a2 * kb[3];
             kb[1] = kb[0]; kb[0] = cur; kb[3] = kb[2]; kb[2] = ya;
             const yb = c2.b0 * cur + c2.b1 * kb[4] + c2.b2 * kb[5] - c2.a1 * kb[6] - c2.a2 * kb[7];
             kb[5] = kb[4]; kb[4] = cur; kb[7] = kb[6]; kb[6] = yb;
-            out = cur + body * (ya + yb);
+            out = cur + ksBody * (ya + yb);
           }
           scratch[i] = out * amp * this.env(this.k);
-          this.line[this.idx] = (cur * (1 - b) + nxt * b) * ks.decay;
-          this.idx = this.idx + 1 === L ? 0 : this.idx + 1;
           this.k++;
         }
         break;
