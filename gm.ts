@@ -27,7 +27,7 @@ export interface Voice {
 
 const fm = (ratio: number, index: number, decay: number, sustain: number): FmConfig => ({ ratio, index, decay, sustain });
 const sub = (wave: "saw" | "square", cutoff: number, resonance: number, envAmount: number, envDecay: number, detune: number, voices: number, drive = 1): SubConfig => ({ wave, cutoff, resonance, envAmount, envDecay, detune, voices, drive });
-const ks = (decay: number, damping: number, body = 0, stiffness = 0, pick = 0, tone = 1): KsConfig => ({ decay, damping, body, stiffness, pick, tone });
+const ks = (decay: number, damping: number, body = 0, stiffness = 0, pick = 0, tone = 1, extra?: Partial<KsConfig>): KsConfig => ({ decay, damping, body, stiffness, pick, tone, ...extra });
 const symp = (strings: number[], feedback: number, damping: number, mix: number): SympatheticVoice => ({ strings, feedback, damping, mix });
 const cab = (drive: number, presence: number, cabLow: number, level: number): AmpConfig => ({ drive, presence, cabLow, level });
 const GTR_STRINGS = [40, 45, 50, 55, 59, 64]; // guitar open strings E2 A2 D3 G3 B3 E4
@@ -71,7 +71,7 @@ const FAMILY: Voice[] = [
 
 /** Per-program overrides where the family default misses badly. */
 const OVERRIDE: Record<number, Voice> = {
-  0: { attack: 0.002, release: 0.2, gain: 0.95, ks: ks(0.9968, 0.42, 0.3, 0.42, 0, 0.5) }, // Acoustic Grand — stiff struck string (inharmonic) + soundboard
+  0: { attack: 0.002, release: 0.2, gain: 0.82, ks: ks(0.9968, 0.42, 0.3, 0.42, 0, 0.5, { strings: 3, spread: 3.5, velBright: 0.45, pluckNoise: 0.05 }) }, // Acoustic Grand — 3 slightly-detuned strings (unison beating/chorus), harder = brighter, felt-hammer tick
   16: { attack: 0.012, release: 0.05, gain: 1.0, foldAbove: 81, harmonics: [{ multiple: 2, amp: 0.7 }, { multiple: 3, amp: 0.4 }, { multiple: 4, amp: 0.5 }, { multiple: 6, amp: 0.25 }, { multiple: 8, amp: 0.15 }] }, // Drawbar Organ — full registration
   // Percussive Organ — this arrangement doubles it high (C6-E6); the 6'/8' drawbars
   // there scream past 8kHz and bury the mix, so keep it low and drop the top ranks.
