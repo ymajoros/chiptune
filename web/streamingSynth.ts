@@ -136,10 +136,21 @@ export interface ChannelMix {
   solo: boolean;
   reverbSend: number; // 0..1
   delaySend: number; // 0..1
+  chorusSend: number; // 0..1
 }
 export function defaultChannelMix(): ChannelMix {
-  return { volume: 1, mute: false, solo: false, reverbSend: 0, delaySend: 0 };
+  return { volume: 1, mute: false, solo: false, reverbSend: 0, delaySend: 0, chorusSend: 0 };
 }
+
+/** A modulated-delay chorus (the shimmery, doubled Cure/80s sound). */
+export interface Chorus {
+  rate: number; // LFO rate, Hz (~0.1..6)
+  depth: number; // 0..1 modulation depth (mapped to a few ms of delay sweep)
+  mix: number; // 0..1 wet level
+}
+
+/** Web-only options: the shared RenderOptions plus the web send effects. */
+export type WebRenderOptions = RenderOptions & { chorus?: Chorus };
 
 // ---- runtime voice: stateful, resumable, one per sounding note ----
 interface RtVoice {
@@ -619,6 +630,67 @@ class StreamPingPong {
   }
 }
 
+// ---- streaming stereo chorus (wet only; modulated delay lines) ----
+// Three LFO-modulated fractional delay lines tapped off a shared circular
+// buffer, phase-spread and panned across the stereo field. Each voice sweeps a
+// short base delay (~18 ms) by a few ms; summing the detuned copies gives the
+// thick, shimmering doubling that defines the Cure's guitars/synths. Wet only:
+// renderBlock adds mix*wet into L/R just like the reverb/delay send buses.
+class StreamChorus {
+  private buf: Float32Array;
+  private w = 0;
+  private readonly mask: number;
+  private readonly size: number;
+  private readonly phase: Float64Array; // per-voice LFO phase (0..1)
+  private readonly nVoices = 3;
+  private readonly baseSamp: number;
+  private readonly depthSamp: number;
+  private readonly lfoInc: number;
+  constructor(c: Chorus) {
+    const rate = Number.isFinite(c.rate) ? Math.min(Math.max(c.rate, 0.05), 8) : 1;
+    const depth = Number.isFinite(c.depth) ? Math.min(Math.max(c.depth, 0), 1) : 0.5;
+    this.baseSamp = 0.018 * SR; // ~18 ms base delay
+    this.depthSamp = (1 + depth * 6) * 0.001 * SR; // depth 0..1 -> 1..7 ms sweep
+    this.lfoInc = rate / SR;
+    const maxDelay = this.baseSamp + this.depthSamp + 4;
+    let size = 2;
+    while (size < maxDelay) size <<= 1; // power-of-two so reads mask cheaply
+    this.size = size;
+    this.mask = size - 1;
+    this.buf = new Float32Array(size);
+    this.phase = new Float64Array(this.nVoices);
+    for (let v = 0; v < this.nVoices; v++) this.phase[v] = v / this.nVoices; // spread LFOs
+  }
+  process(input: Float32Array, outL: Float32Array, outR: Float32Array): void {
+    const buf = this.buf, mask = this.mask, size = this.size;
+    for (let k = 0; k < input.length; k++) {
+      const x = input[k];
+      buf[this.w] = Number.isFinite(x) ? x : 0;
+      let l = 0, r = 0, mid = 0;
+      for (let v = 0; v < this.nVoices; v++) {
+        let ph = this.phase[v] + this.lfoInc;
+        if (ph >= 1) ph -= 1;
+        this.phase[v] = ph;
+        const lfo = Math.sin(2 * Math.PI * ph);
+        const d = this.baseSamp + this.depthSamp * (0.5 + 0.5 * lfo); // unipolar sweep
+        let rp = this.w - d;
+        while (rp < 0) rp += size;
+        const i0 = rp | 0;
+        const frac = rp - i0;
+        const s0 = buf[i0 & mask];
+        const s1 = buf[(i0 + 1) & mask];
+        let s = s0 + (s1 - s0) * frac;
+        if (!Number.isFinite(s)) s = 0;
+        if (v === 0) l += s; else if (v === 1) mid += s; else r += s; // pan spread
+      }
+      this.w = this.w + 1 === size ? 0 : this.w + 1;
+      const scale = 1 / 1.6;
+      outL[k] = (l + 0.6 * mid) * scale;
+      outR[k] = (r + 0.6 * mid) * scale;
+    }
+  }
+}
+
 /**
  * Per-instrument sympathetic resonance (streaming): a bank of tuned string
  * resonators, driven by one channel's signal, ringing in sympathy. Stateful
@@ -719,6 +791,7 @@ class SympatheticBank {
 /** Signature strings to decide when a shared FX unit must be rebuilt. */
 const reverbSig = (r?: Reverb) => (r ? `${r.room}` : "off");
 const delaySig = (d?: Delay) => (d ? `${d.time}` : "off");
+const chorusSig = (c?: Chorus) => (c ? `${c.rate}|${c.depth}` : "off");
 const compSig = (c?: RenderOptions["compress"]) => (c ? `${c.threshold}|${c.ratio}|${c.attack}|${c.release}` : "off");
 
 /**
@@ -727,7 +800,7 @@ const compSig = (c?: RenderOptions["compress"]) => (c ? `${c.threshold}|${c.rati
  */
 export class StreamingSynth {
   private song!: Song;
-  private opts!: RenderOptions;
+  private opts!: WebRenderOptions;
   private sorted: { s: number; note: Note }[] = [];
   private noteIdx = 0;
   private pos = 0; // playhead in samples
@@ -740,10 +813,12 @@ export class StreamingSynth {
   private revL?: StreamReverb;
   private revR?: StreamReverb;
   private ping?: StreamPingPong;
+  private chorus?: StreamChorus;
   private comp?: Compressor;
   private limiter = new Compressor(LIMITER);
   private revSig = "off";
   private delSig = "off";
+  private choSig = "off";
   private cSig = "off";
 
   // scratch buffers (reused per block)
@@ -751,12 +826,15 @@ export class StreamingSynth {
   private dry = new Float32Array(0);
   private revBus = new Float32Array(0);
   private delBus = new Float32Array(0);
+  private choBus = new Float32Array(0);
   private wetL = new Float32Array(0);
   private wetR = new Float32Array(0);
   private dl = new Float32Array(0);
   private dr = new Float32Array(0);
+  private cl = new Float32Array(0);
+  private cr = new Float32Array(0);
 
-  constructor(song: Song, opts: RenderOptions) {
+  constructor(song: Song, opts: WebRenderOptions) {
     this.setSong(song);
     this.setOptions(opts);
   }
@@ -772,7 +850,7 @@ export class StreamingSynth {
     this.seek(0);
   }
 
-  setOptions(opts: RenderOptions): void {
+  setOptions(opts: WebRenderOptions): void {
     this.opts = opts;
     this.voiceFor = opts.gm ? gmVoiceFor(this.song, opts.voiceOverrides) : undefined;
     // rebuild shared FX only when their structural params change (keeps tails)
@@ -786,6 +864,11 @@ export class StreamingSynth {
     if (ds !== this.delSig) {
       this.delSig = ds;
       this.ping = opts.delay ? new StreamPingPong(opts.delay) : undefined;
+    }
+    const chs = chorusSig(opts.chorus);
+    if (chs !== this.choSig) {
+      this.choSig = chs;
+      this.chorus = opts.chorus ? new StreamChorus(opts.chorus) : undefined;
     }
     const cs = compSig(opts.compress);
     if (cs !== this.cSig) {
@@ -823,6 +906,7 @@ export class StreamingSynth {
       this.revL = this.opts.reverb ? new StreamReverb(this.opts.reverb.room, 0) : undefined;
       this.revR = this.opts.reverb ? new StreamReverb(this.opts.reverb.room, 7) : undefined;
       this.ping = this.opts.delay ? new StreamPingPong(this.opts.delay) : undefined;
+      this.chorus = this.opts.chorus ? new StreamChorus(this.opts.chorus) : undefined;
       this.comp = this.opts.compress ? new Compressor(this.opts.compress) : undefined;
       this.limiter = new Compressor(LIMITER);
     }
@@ -834,21 +918,24 @@ export class StreamingSynth {
     this.dry = new Float32Array(N);
     this.revBus = new Float32Array(N);
     this.delBus = new Float32Array(N);
+    this.choBus = new Float32Array(N);
     this.wetL = new Float32Array(N);
     this.wetR = new Float32Array(N);
     this.dl = new Float32Array(N);
     this.dr = new Float32Array(N);
+    this.cl = new Float32Array(N);
+    this.cr = new Float32Array(N);
   }
 
   /** Resolve a channel's live mix gains (volume + mute/solo). */
-  private chanGains(chanKey: string): { g: number; rev: number; del: number } {
+  private chanGains(chanKey: string): { g: number; rev: number; del: number; cho: number } {
     const m = this.mixer.get(chanKey);
     const anySolo = this.hasSolo();
-    if (!m) return { g: anySolo ? 0 : 1, rev: 0.25, del: 0 };
+    if (!m) return { g: anySolo ? 0 : 1, rev: 0.25, del: 0, cho: 0 };
     let g = m.volume;
     if (anySolo) g = m.solo ? g : 0;
     else if (m.mute) g = 0;
-    return { g, rev: m.reverbSend, del: m.delaySend };
+    return { g, rev: m.reverbSend, del: m.delaySend, cho: m.chorusSend ?? 0 };
   }
   private soloCache = { valid: false, any: false };
   private hasSolo(): boolean {
@@ -864,8 +951,8 @@ export class StreamingSynth {
   renderBlock(N: number): [Float32Array, Float32Array] {
     this.ensureScratch(N);
     this.soloCache.valid = false; // mixer may have changed since last block
-    const { dry, revBus, delBus, scratch } = this;
-    dry.fill(0); revBus.fill(0); delBus.fill(0);
+    const { dry, revBus, delBus, choBus, scratch } = this;
+    dry.fill(0); revBus.fill(0); delBus.fill(0); choBus.fill(0);
 
     // spawn voices whose onset falls in this block
     const blockEnd = this.pos + N;
@@ -895,11 +982,12 @@ export class StreamingSynth {
       const count = N - start;
       if (count <= 0) { next.push(voice); continue; }
       voice.render(scratch, start, count);
-      const { g, rev, del } = this.chanGains(voice.chanKey);
+      const { g, rev, del, cho } = this.chanGains(voice.chanKey);
       if (g !== 0) {
         for (let i = start; i < N; i++) dry[i] += g * scratch[i];
         if (rev > 0) { const gr = g * rev; for (let i = start; i < N; i++) revBus[i] += gr * scratch[i]; }
         if (del > 0) { const gd = g * del; for (let i = start; i < N; i++) delBus[i] += gd * scratch[i]; }
+        if (cho > 0) { const gc = g * cho; for (let i = start; i < N; i++) choBus[i] += gc * scratch[i]; }
         const bank = this.symBanks.get(voice.chanKey);
         if (bank) { const inp = bank.input; for (let i = start; i < N; i++) inp[i] += g * scratch[i]; }
       }
@@ -918,6 +1006,7 @@ export class StreamingSynth {
       dry[i] = clampFinite(dry[i]);
       revBus[i] = clampFinite(revBus[i]);
       delBus[i] = clampFinite(delBus[i]);
+      choBus[i] = clampFinite(choBus[i]);
     }
 
     // shared send FX -> widen to stereo
@@ -933,6 +1022,11 @@ export class StreamingSynth {
     if (this.ping) {
       this.ping.process(delBus, this.dl, this.dr);
       for (let i = 0; i < N; i++) { L[i] += this.dl[i]; R[i] += this.dr[i]; }
+    }
+    if (this.chorus && this.opts.chorus) {
+      const mix = this.opts.chorus.mix;
+      this.chorus.process(choBus, this.cl, this.cr);
+      for (let i = 0; i < N; i++) { L[i] += mix * this.cl[i]; R[i] += mix * this.cr[i]; }
     }
 
     // master: fixed gain -> compressor (opt) -> limiter -> clamp
@@ -958,6 +1052,7 @@ export class StreamingSynth {
       this.revL = this.opts.reverb ? new StreamReverb(this.opts.reverb.room, 0) : undefined;
       this.revR = this.opts.reverb ? new StreamReverb(this.opts.reverb.room, 7) : undefined;
       this.ping = this.opts.delay ? new StreamPingPong(this.opts.delay) : undefined;
+      this.chorus = this.opts.chorus ? new StreamChorus(this.opts.chorus) : undefined;
     }
 
     this.pos += N;

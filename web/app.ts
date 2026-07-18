@@ -24,7 +24,6 @@ import {
   FORMANT_VOICES,
   KS_VOICES,
   VOWELS,
-  type RenderOptions,
   type Voice,
   type VoiceOverride,
   type Harmonic,
@@ -37,7 +36,7 @@ import { song as bundledSong } from "../songData.ts";
 import { GM_NAMES, gmVoice } from "../gm.ts";
 import { parseMidiBuffer } from "./browserMidi.ts";
 import type { Song, Note } from "../midiParse.ts";
-import { StreamingSynth, defaultChannelMix, PitchedVoice, MASTER_GAIN, type ChannelMix } from "./streamingSynth.ts";
+import { StreamingSynth, defaultChannelMix, PitchedVoice, MASTER_GAIN, type ChannelMix, type WebRenderOptions } from "./streamingSynth.ts";
 
 type EngineType = "additive" | "fm" | "sub" | "ks" | "formant";
 
@@ -103,11 +102,28 @@ const els = {
   stereo: $("stereo") as HTMLInputElement,
   compress: $("compress") as HTMLInputElement,
   reverb: $("reverb") as HTMLInputElement,
+  reverbRoom: $("reverbRoom") as HTMLInputElement,
+  reverbRoomVal: $("reverbRoomVal"),
   reverbMix: $("reverbMix") as HTMLInputElement,
   reverbMixVal: $("reverbMixVal"),
   delay: $("delay") as HTMLInputElement,
+  delayTime: $("delayTime") as HTMLInputElement,
+  delayTimeVal: $("delayTimeVal"),
+  delayFb: $("delayFb") as HTMLInputElement,
+  delayFbVal: $("delayFbVal"),
   delayMix: $("delayMix") as HTMLInputElement,
   delayMixVal: $("delayMixVal"),
+  chorus: $("chorus") as HTMLInputElement,
+  chorusRate: $("chorusRate") as HTMLInputElement,
+  chorusRateVal: $("chorusRateVal"),
+  chorusDepth: $("chorusDepth") as HTMLInputElement,
+  chorusDepthVal: $("chorusDepthVal"),
+  chorusMix: $("chorusMix") as HTMLInputElement,
+  chorusMixVal: $("chorusMixVal"),
+  fxTabs: $("fxTabs"),
+  revSends: $("revSends"),
+  delSends: $("delSends"),
+  choSends: $("choSends"),
   voice: $("voice") as HTMLSelectElement,
   voiceRow: $("voiceRow"),
   status: $("status"),
@@ -142,7 +158,7 @@ function fmtTime(s: number): string {
 }
 
 // ---- options / voice resolution ----
-function buildOptions(): RenderOptions {
+function buildOptions(): WebRenderOptions {
   const gm = els.gm.checked;
   const preset = PRESETS[Number(els.voice.value)] ?? PRESETS[0];
   return {
@@ -155,8 +171,9 @@ function buildOptions(): RenderOptions {
     formant: preset.timbre.formant,
     gm,
     drums: els.drums.checked,
-    reverb: els.reverb.checked ? { room: 0.82, mix: Number(els.reverbMix.value) } : undefined,
-    delay: els.delay.checked ? { time: 0.32, feedback: 0.4, mix: Number(els.delayMix.value) } : undefined,
+    reverb: els.reverb.checked ? { room: Number(els.reverbRoom.value), mix: Number(els.reverbMix.value) } : undefined,
+    delay: els.delay.checked ? { time: Number(els.delayTime.value), feedback: Number(els.delayFb.value), mix: Number(els.delayMix.value) } : undefined,
+    chorus: els.chorus.checked ? { rate: Number(els.chorusRate.value), depth: Number(els.chorusDepth.value), mix: Number(els.chorusMix.value) } : undefined,
     compress: els.compress.checked ? { threshold: -18, ratio: 3, attack: 0.005, release: 0.12 } : undefined,
     voiceOverrides,
   };
@@ -234,7 +251,7 @@ function sanitizeConfig(cfg: SongConfig): SongConfig {
   }
   for (const m of Object.values(cfg.mixer ?? {})) {
     const rec = m as Record<string, unknown>;
-    for (const f of ["volume", "reverbSend", "delaySend"]) {
+    for (const f of ["volume", "reverbSend", "delaySend", "chorusSend"]) {
       const n = Number(rec[f]); if (Number.isFinite(n)) rec[f] = n; else delete rec[f];
     }
   }
@@ -463,14 +480,12 @@ function buildEditor(): void {
       <td><input type="range" data-k="${c.key}" data-f="volume" min="0" max="1" step="0.02" value="${m.volume}"/><span class="cellval" id="vol-${c.key}">${m.volume.toFixed(2)}</span></td>
       <td><button class="mixbtn ${m.mute ? "on-mute" : ""}" data-k="${c.key}" data-f="mute">M</button></td>
       <td><button class="mixbtn ${m.solo ? "on-solo" : ""}" data-k="${c.key}" data-f="solo">S</button></td>
-      <td><input type="range" data-k="${c.key}" data-f="reverbSend" min="0" max="1" step="0.05" value="${m.reverbSend}"/><span class="cellval" id="rev-${c.key}">${m.reverbSend.toFixed(2)}</span></td>
-      <td><input type="range" data-k="${c.key}" data-f="delaySend" min="0" max="1" step="0.05" value="${m.delaySend}"/><span class="cellval" id="del-${c.key}">${m.delaySend.toFixed(2)}</span></td>
       <td><button class="editbtn ${selectedKey === c.key ? "editing" : ""}" data-k="${c.key}" data-f="edit"${c.isDrum ? " disabled" : ""}>Edit</button></td>
     </tr>`;
   });
 
   els.tracks.innerHTML = `<table><thead><tr>
-    <th>Trk</th><th>Ch</th><th>Instrument (GM)</th><th>Gain</th><th>Volume</th><th>Mute</th><th>Solo</th><th>Rev send</th><th>Dly send</th><th></th>
+    <th>Trk</th><th>Ch</th><th>Instrument (GM)</th><th>Gain</th><th>Volume</th><th>Mute</th><th>Solo</th><th></th>
   </tr></thead><tbody>${rows.join("")}</tbody></table>`;
 
   // set each GM <select> to the current program
@@ -479,7 +494,46 @@ function buildEditor(): void {
     const sel = els.tracks.querySelector<HTMLSelectElement>(`select[data-k="${c.key}"][data-f="program"]`);
     if (sel) sel.value = String(voiceOverrides[c.key]?.program ?? c.program);
   }
+  buildEffectSends(chans);
 }
+
+// ---- per-channel effect send routing (one compact slider list per effect tab) ----
+function buildEffectSends(chans: ChanInfo[]): void {
+  const specs: { field: "reverbSend" | "delaySend" | "chorusSend"; container: HTMLElement; prefix: string }[] = [
+    { field: "reverbSend", container: els.revSends, prefix: "sRev" },
+    { field: "delaySend", container: els.delSends, prefix: "sDel" },
+    { field: "chorusSend", container: els.choSends, prefix: "sCho" },
+  ];
+  for (const { field, container, prefix } of specs) {
+    container.innerHTML = chans.map((c) => {
+      const m = mixer.get(c.key)!;
+      const val = Number(m[field] ?? 0);
+      const label = `T${c.track}·Ch${c.channel + 1}${c.isDrum ? " (drum)" : ""}`;
+      return `<div class="fxsend">
+        <label title="${label}">${label}</label>
+        <input type="range" data-fx="${field}" data-k="${c.key}" min="0" max="1" step="0.05" value="${val}"/>
+        <span class="cellval" id="${prefix}-${c.key}">${val.toFixed(2)}</span>
+      </div>`;
+    }).join("");
+  }
+}
+
+// live-update a per-channel send from the effect tab sliders
+function fxSendInput(t: HTMLInputElement): void {
+  const key = t.dataset.k, field = t.dataset.fx as "reverbSend" | "delaySend" | "chorusSend" | undefined;
+  if (!key || !field) return;
+  const val = Number(t.value);
+  const m = mixer.get(key);
+  if (!m) return;
+  m[field] = val;
+  const prefix = field === "reverbSend" ? "sRev" : field === "delaySend" ? "sDel" : "sCho";
+  const out = document.getElementById(`${prefix}-${key}`);
+  if (out) out.textContent = val.toFixed(2);
+  saveConfig();
+}
+els.revSends.addEventListener("input", (e) => fxSendInput(e.target as HTMLInputElement));
+els.delSends.addEventListener("input", (e) => fxSendInput(e.target as HTMLInputElement));
+els.choSends.addEventListener("input", (e) => fxSendInput(e.target as HTMLInputElement));
 
 function ov(key: string): VoiceOverride {
   return (voiceOverrides[key] ??= {});
@@ -493,8 +547,6 @@ els.tracks.addEventListener("input", (e) => {
   const m = mixer.get(key)!;
   if (field === "gain") { ov(key).gain = val; ($(`gain-${key}`) as HTMLElement).textContent = val.toFixed(2); applyOptions(); }
   else if (field === "volume") { m.volume = val; ($(`vol-${key}`) as HTMLElement).textContent = val.toFixed(2); }
-  else if (field === "reverbSend") { m.reverbSend = val; ($(`rev-${key}`) as HTMLElement).textContent = val.toFixed(2); }
-  else if (field === "delaySend") { m.delaySend = val; ($(`del-${key}`) as HTMLElement).textContent = val.toFixed(2); }
   saveConfig();
 });
 
@@ -1105,20 +1157,32 @@ els.roll.addEventListener("mousedown", (ev) => {
   window.addEventListener("mouseup", up);
 });
 
-for (const ctl of [els.gm, els.drums, els.stereo, els.compress, els.reverb, els.delay, els.voice]) {
+for (const ctl of [els.gm, els.drums, els.stereo, els.compress, els.reverb, els.delay, els.chorus, els.voice]) {
   ctl.addEventListener("change", () => {
     if (ctl === els.gm) els.voiceRow.style.display = els.gm.checked ? "none" : "flex";
     applyOptions();
   });
 }
-els.reverbMix.addEventListener("input", () => {
-  els.reverbMixVal.textContent = Number(els.reverbMix.value).toFixed(2);
-  applyOptions();
+// effect tab switching (show/hide the panel for the clicked tab)
+els.fxTabs.addEventListener("click", (e) => {
+  const b = (e.target as HTMLElement).closest(".fxtab") as HTMLElement | null;
+  if (!b) return;
+  const tab = b.dataset.tab;
+  for (const t of els.fxTabs.querySelectorAll(".fxtab")) t.classList.toggle("active", (t as HTMLElement).dataset.tab === tab);
+  for (const p of document.querySelectorAll(".fxpanel")) p.classList.toggle("active", (p as HTMLElement).dataset.panel === tab);
 });
-els.delayMix.addEventListener("input", () => {
-  els.delayMixVal.textContent = Number(els.delayMix.value).toFixed(2);
-  applyOptions();
-});
+// global effect parameter sliders: update the readout, then push options live
+const fxParam = (input: HTMLInputElement, out: HTMLElement, digits = 2) => {
+  input.addEventListener("input", () => { out.textContent = Number(input.value).toFixed(digits); applyOptions(); });
+};
+fxParam(els.reverbRoom, els.reverbRoomVal);
+fxParam(els.reverbMix, els.reverbMixVal);
+fxParam(els.delayTime, els.delayTimeVal);
+fxParam(els.delayFb, els.delayFbVal);
+fxParam(els.delayMix, els.delayMixVal);
+fxParam(els.chorusRate, els.chorusRateVal, 1);
+fxParam(els.chorusDepth, els.chorusDepthVal);
+fxParam(els.chorusMix, els.chorusMixVal);
 els.resetCfg.addEventListener("click", resetToDefaults);
 els.saveCfg.addEventListener("click", () => { saveConfig(); els.cfgStatus.textContent = `Saved “${songId}” ✓`; });
 
