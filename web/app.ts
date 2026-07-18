@@ -120,6 +120,7 @@ const els = {
   instEditor: $("instEditor"),
   piano: $("piano"),
   midiStatus: $("midiStatus"),
+  kbLayout: $("kbLayout") as HTMLSelectElement,
   roll: $("roll") as HTMLCanvasElement,
 };
 
@@ -400,6 +401,21 @@ function drawPlayhead(t: number): void {
   playheadT = t;
   drawRoll();
 }
+// Highlight (class `playing`) the on-screen keys of the selected channel's notes
+// that are sounding at transport time `t`. Cleared when stopped / no selection.
+let playingPitches = new Set<number>();
+function updatePlayingKeys(t: number): void {
+  const next = new Set<number>();
+  if (running && selectedKey) {
+    for (const n of song.notes) {
+      if (`${n.track}:${n.channel}` !== selectedKey) continue;
+      if (n.start <= t && t < n.start + n.dur) next.add(n.pitch);
+    }
+  }
+  for (const p of playingPitches) if (!next.has(p)) keyEl(p)?.classList.remove("playing");
+  for (const p of next) if (!playingPitches.has(p)) keyEl(p)?.classList.add("playing");
+  playingPitches = next;
+}
 function frame(): void {
   if (running) {
     updateSeek();
@@ -408,6 +424,7 @@ function frame(): void {
     }
     drawPlayhead(currentTime());
   }
+  updatePlayingKeys(currentTime());
   requestAnimationFrame(frame);
 }
 // redraw on resize, and once after first layout (initial canvas width may be 0)
@@ -514,7 +531,9 @@ function resolveVoice(key: string): { voice: Voice; engine: EngineType; program:
   if (ov) {
     const engineKeys: (keyof VoiceOverride)[] = ["harmonics", "fm", "sub", "ks", "formant"];
     if (engineKeys.some((k) => ov[k] !== undefined)) {
-      v = { attack: v.attack, release: v.release, gain: v.gain, foldAbove: v.foldAbove };
+      // engine swap clears the other engine fields, but keep the non-engine
+      // stages the streaming path (gmVoiceFor) preserves, so preview == playback.
+      v = { attack: v.attack, release: v.release, gain: v.gain, foldAbove: v.foldAbove, sympathetic: v.sympathetic, amp: v.amp };
     }
     v = { ...v, ...ov };
     delete (v as Partial<VoiceOverride>).program;
@@ -799,34 +818,68 @@ els.piano.addEventListener("pointerdown", (e) => {
   pointerPitch = Number(t.dataset.pitch);
   noteOn(pointerPitch);
 });
+// glissando: while the button is held, sliding onto a different key stops the
+// old note and starts the new one (robust if the pointer leaves the piano).
+els.piano.addEventListener("pointermove", (e) => {
+  if (pointerPitch === null) return;
+  const under = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest(".pkey")
+    ?? (e.target as HTMLElement).closest(".pkey");
+  const t = under as HTMLElement | null;
+  if (!t) return;
+  const p = Number(t.dataset.pitch);
+  if (p !== pointerPitch) { noteOff(pointerPitch); noteOn(p); pointerPitch = p; }
+});
 window.addEventListener("pointerup", () => {
   if (pointerPitch !== null) { noteOff(pointerPitch); pointerPitch = null; }
 });
 
-// computer-keyboard mapping (one octave from middle C)
-const KEYMAP: Record<string, number> = {
-  a: 60, w: 61, s: 62, e: 63, d: 64, f: 65, t: 66, g: 67, y: 68, h: 69, u: 70, j: 71, k: 72,
+// computer-keyboard mapping (one octave from middle C). `e.key` is layout-
+// dependent — on AZERTY the physical keys at the QWERTY a/w positions emit q/z —
+// so we keep one map per layout and pick the active one by the selected layout.
+const KEYMAPS: Record<string, Record<string, number>> = {
+  qwerty: { a: 60, w: 61, s: 62, e: 63, d: 64, f: 65, t: 66, g: 67, y: 68, h: 69, u: 70, j: 71, k: 72 },
+  azerty: { q: 60, z: 61, s: 62, e: 63, d: 64, f: 65, t: 66, g: 67, y: 68, h: 69, u: 70, j: 71, k: 72 },
 };
+const KB_LAYOUT_KEY = "chiptune:kbLayout";
+function activeKeymap(): Record<string, number> {
+  return KEYMAPS[els.kbLayout.value] ?? KEYMAPS.qwerty;
+}
+// restore the persisted layout choice (default QWERTY)
+try {
+  const saved = localStorage.getItem(KB_LAYOUT_KEY);
+  if (saved && KEYMAPS[saved]) els.kbLayout.value = saved;
+} catch { /* storage disabled — keep default */ }
+els.kbLayout.addEventListener("change", () => {
+  try { localStorage.setItem(KB_LAYOUT_KEY, els.kbLayout.value); } catch {}
+});
+
+/** True when a form control has focus, so typing shouldn't play notes. */
+function inField(): boolean {
+  const el = document.activeElement;
+  const tag = el?.tagName;
+  return tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA";
+}
 const held = new Set<string>();
 window.addEventListener("keydown", (e) => {
   if (e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
-  const tag = (e.target as HTMLElement).tagName;
-  const inField = tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA";
+  const typing = inField();
   // spacebar = play/stop (unless typing in a field, where space is a space)
-  if (e.key === " " && !inField) {
+  if (e.key === " " && !typing) {
     e.preventDefault();
     togglePlay();
     return;
   }
-  if (inField) return;
-  const p = KEYMAP[e.key.toLowerCase()];
-  if (p === undefined || held.has(e.key)) return;
-  held.add(e.key);
+  if (typing) return;
+  const key = e.key.toLowerCase();
+  const p = activeKeymap()[key];
+  if (p === undefined || held.has(key)) return;
+  held.add(key);
   noteOn(p); // held until keyup
 });
 window.addEventListener("keyup", (e) => {
-  if (held.delete(e.key)) {
-    const p = KEYMAP[e.key.toLowerCase()];
+  const key = e.key.toLowerCase();
+  if (held.delete(key)) {
+    const p = activeKeymap()[key];
     if (p !== undefined) noteOff(p);
   }
 });

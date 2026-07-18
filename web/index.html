@@ -84,6 +84,10 @@
       .pkey.black { width: 22px; height: 74px; background: #16181f; margin: 0 -11px; z-index: 2; border-color: #000; }
       .pkey.down { background: var(--accent); }
       .pkey.black.down { background: #2a7ea0; }
+      /* highlight the selected track's currently-sounding notes during playback */
+      .pkey.playing { background: #ffca3a; }
+      .pkey.black.playing { background: #b98f00; }
+      .pkey.playing.down { background: var(--accent); }
     </style>
   </head>
   <body>
@@ -154,7 +158,13 @@
       <div class="panel">
         <div class="row" style="justify-content: space-between;">
           <h2 style="margin:0;">Keyboard / audition</h2>
-          <span class="filelabel" id="midiStatus">MIDI: checking…</span>
+          <span class="row" style="gap:8px;">
+            <label class="chk">Layout <select id="kbLayout">
+              <option value="qwerty">QWERTY</option>
+              <option value="azerty">AZERTY</option>
+            </select></label>
+            <span class="filelabel" id="midiStatus">MIDI: checking…</span>
+          </span>
         </div>
         <div id="piano"></div>
         <div class="row"><span class="filelabel">Plays the voice of the channel being edited (or Acoustic Grand). Click keys, use computer keys A–K / W–U, or connect a MIDI keyboard.</span></div>
