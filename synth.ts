@@ -307,6 +307,7 @@ function renderSub(
     low += f * band;
     const high = s - low - q1 * band;
     band += f * high;
+    if (!Number.isFinite(low) || !Number.isFinite(band)) { low = 0; band = 0; } // self-heal a rung-up filter
 
     tone[k] = low * amp;
   }
