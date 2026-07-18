@@ -87,14 +87,11 @@ const OVERRIDE: Record<number, Voice> = {
   // Atmosphere (FX 4) — a soft, dark, slowly-evolving PAD, not the metallic FM
   // that read as a sitar. Wide detuned saws through a low cutoff, slow attack.
   99: { attack: 0.08, release: 0.6, gain: 1.7, sub: sub("saw", 700, 0.12, 500, 2.0, 22, 5) },
-  // Clean Guitar — a KS pluck never read as a clean *electric* guitar (too
-  // acoustic/percussive). A low-index sustained FM gives the smooth, pickup-like
-  // clean-electric tone instead.
   // Steel Guitar — steel strings ring longer and brighter than the default
   // pluck; a soft attack rounds off the abrupt KS onset that read as mechanical.
   24: { attack: 0.004, release: 0.14, gain: 0.9, ks: ks(0.995, 0.5, 0.35, 0.12, 0.2, 0.5) }, // Nylon Guitar — soft finger pluck, bodied
   25: { attack: 0.01, release: 0.18, gain: 0.85, ks: ks(0.997, 0.56, 0.32, 0.16, 0.15, 0.62) },
-  27: { attack: 0.01, release: 0.16, gain: 0.85, fm: fm(1, 2.2, 1.2, 0.4) },
+  27: { attack: 0.006, release: 0.16, gain: 0.9, ks: ks(0.9975, 0.34, 0.12, 0.14, 0.12, 0.88) }, // Clean Guitar — bright resonant string (clean electric)
   80: { attack: 0.005, release: 0.06, gain: 0.8, sub: sub("square", 2200, 0.3, 1400, 0.3, 4, 2) }, // Square Lead
 };
 
