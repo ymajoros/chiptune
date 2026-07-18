@@ -297,7 +297,7 @@ function renderSub(
     // --- distortion: tanh soft-clip BEFORE the filter, like a guitar amp
     // (preamp overdrive -> the filter then acts as the speaker cabinet, taming
     // the harsh top). drive 1 is clean; higher folds the saw into a fuzz. ---
-    if (drive > 1) { const d = s * drive; s = d <= -1 ? -1 : d >= 1 ? 1 : 1.5 * d - 0.5 * d * d * d; } // cubic soft-clip: harder edge than tanh -> audible grit
+    if (drive > 1) { const d = s * drive + 0.2; const c = d <= -1 ? -1 : d >= 1 ? 1 : 1.5 * d - 0.5 * d * d * d; s = c - 0.16; } // cubic soft-clip: harder edge than tanh -> audible grit
 
     // --- resonant low-pass with envelope-swept cutoff ---
     let fc = sub.cutoff + sub.envAmount * Math.exp(-k / envDecaySamples);

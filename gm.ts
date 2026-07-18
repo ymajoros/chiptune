@@ -71,9 +71,9 @@ const OVERRIDE: Record<number, Voice> = {
   // Percussive Organ — this arrangement doubles it high (C6-E6); the 6'/8' drawbars
   // there scream past 8kHz and bury the mix, so keep it low and drop the top ranks.
   17: { attack: 0.006, release: 0.05, gain: 0.6, foldAbove: 81, harmonics: [{ multiple: 2, amp: 0.5 }, { multiple: 3, amp: 0.28 }, { multiple: 4, amp: 0.2 }] },
-  29: { attack: 0.006, release: 0.12, gain: 0.68, sub: sub("saw", 3200, 0.4, 900, 0.5, 10, 2, 6) }, // Overdrive Guitar — crunch
+  29: { attack: 0.006, release: 0.14, gain: 0.6, sub: sub("saw", 4500, 0.45, 1000, 0.5, 12, 2, 11) }, // Overdrive Guitar — cranked crunch
   19: { attack: 0.05, release: 0.12, gain: 0.85, foldAbove: 81, harmonics: [{ multiple: 2, amp: 0.5 }, { multiple: 3, amp: 0.3 }, { multiple: 4, amp: 0.5 }, { multiple: 5, amp: 0.25 }, { multiple: 8, amp: 0.2 }] }, // Church Organ — fuller, principal ranks
-  30: { attack: 0.004, release: 0.15, gain: 0.6, sub: sub("saw", 4200, 0.45, 700, 0.7, 14, 2, 12) }, // Distortion Guitar — fuzz through an open cabinet
+  30: { attack: 0.004, release: 0.18, gain: 0.5, sub: sub("saw", 6500, 0.5, 800, 0.7, 16, 2, 22) }, // Distortion Guitar — high-gain fuzz
   // Finger Bass — matched to the record's measured bass: rounded (h2~0.5, fast
   // harmonic rolloff) and plucked (decays to ~0.2 sustain over ~0.3s).
   33: { attack: 0.006, release: 0.05, gain: 1.5, fm: fm(1, 2.8, 0.25, 0.28) },
