@@ -217,7 +217,7 @@ function channelsOf(s: Song): ChanInfo[] {
 // through our big Freeverb bus (a CC91≈92 channel seeds ~0.72, drenched). We
 // scale the seed down so a typical CC91 lands at a present-but-subtle send; the
 // user's per-channel slider still spans the full 0..1, so they can crank it.
-const REVERB_SEED_SCALE = 0.5;
+const REVERB_SEED_SCALE = 0.3;
 function newChannelMix(c: ChanInfo): ChannelMix {
   const m = defaultChannelMix();
   m.reverbSend = c.isDrum ? 0 : (song.reverb?.[c.key] ?? 0) * REVERB_SEED_SCALE;
