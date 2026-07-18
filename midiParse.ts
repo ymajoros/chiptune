@@ -48,6 +48,7 @@ export interface Song {
   lyrics: Lyric[]; // empty unless the file is a .kar
   meta: string[]; // @-tags: title, artist, language...
   programs: Program[]; // GM program-change events (empty if none)
+  reverb?: Record<string, number>; // per "track:channel" CC91 reverb depth, 0..1 (only channels that set it)
 }
 
 /** Read a MIDI variable-length quantity; returns [value, nextIndex]. */
@@ -85,6 +86,7 @@ export function parseMidiData(data: Buffer): Song {
   const rawLyrics: [number, string][] = []; // [absTick, syllable]
   const meta: string[] = []; // @-tags from a .kar header
   const rawPrograms: [number, number, number, number][] = []; // [absTick, track, channel, program]
+  const rawReverb = new Map<string, number>(); // "track:channel" -> last CC91 (reverb depth) value 0..127
 
   for (let track = 0; track < ntracks; track++) {
     if (data.toString("ascii", pos, pos + 4) !== "MTrk") throw new Error("bad track header");
@@ -148,8 +150,12 @@ export function parseMidiData(data: Buffer): Song {
             rawNotes.push([found[0], absTick, pitch, found[1], channel, track]);
           }
         }
-      } else if (event === 0xa0 || event === 0xb0 || event === 0xe0) {
-        i += 2; // 2-byte channel messages
+      } else if (event === 0xb0) {
+        const cc = data[i], val = data[i + 1];
+        i += 2;
+        if (cc === 91) rawReverb.set(`${track}:${channel}`, val); // CC91 = reverb send depth
+      } else if (event === 0xa0 || event === 0xe0) {
+        i += 2; // 2-byte channel messages (poly aftertouch / pitch bend)
       } else if (event === 0xc0) {
         rawPrograms.push([absTick, track, channel, data[i]]); // program change
         i += 1;
@@ -202,7 +208,10 @@ export function parseMidiData(data: Buffer): Song {
   const duration = notes.reduce((m, n) => Math.max(m, n.start + n.dur), 0);
   const tempoBpm = Math.round((60_000_000 / tempoEvents[0][1]) * 10) / 10;
 
-  return { ppq, tempoBpm, duration, notes, lyrics, meta, programs };
+  const reverb: Record<string, number> = {};
+  for (const [k, v] of rawReverb) reverb[k] = v / 127;
+
+  return { ppq, tempoBpm, duration, notes, lyrics, meta, programs, reverb };
 }
 
 // run directly:  node midiParse.ts <file.mid>

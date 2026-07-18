@@ -88,7 +88,7 @@ export interface ChannelMix {
   delaySend: number; // 0..1
 }
 export function defaultChannelMix(): ChannelMix {
-  return { volume: 1, mute: false, solo: false, reverbSend: 0.25, delaySend: 0 };
+  return { volume: 1, mute: false, solo: false, reverbSend: 0, delaySend: 0 };
 }
 
 // ---- runtime voice: stateful, resumable, one per sounding note ----

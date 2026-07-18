@@ -187,6 +187,16 @@ function channelsOf(s: Song): ChanInfo[] {
   return [...map.values()].sort((a, b) => a.track - b.track || a.channel - b.channel);
 }
 
+// A fresh channel mix. Reverb is OFF by default and only seeded from the MIDI's
+// own CC91 reverb depth (never on drums) — the user then enables/adjusts it per
+// track, which the mixer/.chip persists. So instruments that ask for reverb get
+// it, drums stay dry, and nothing is drenched by default.
+function newChannelMix(c: ChanInfo): ChannelMix {
+  const m = defaultChannelMix();
+  m.reverbSend = c.isDrum ? 0 : (song.reverb?.[c.key] ?? 0);
+  return m;
+}
+
 // ---- persistence ----
 function songHash(s: Song, name: string): string {
   let h = 2166136261 >>> 0;
@@ -241,7 +251,7 @@ function loadConfig(): boolean {
     }
   } catch { /* corrupt — fall through to defaults */ }
   // ensure every channel present in the song has a mixer strip
-  for (const c of channelsOf(song)) if (!mixer.has(c.key)) mixer.set(c.key, defaultChannelMix());
+  for (const c of channelsOf(song)) if (!mixer.has(c.key)) mixer.set(c.key, newChannelMix(c));
   return loaded;
 }
 
@@ -841,7 +851,7 @@ function openSong(newSong: Song, name: string, preset?: SongConfig): void {
     mixer.clear();
     Object.assign(voiceOverrides, preset.voiceOverrides ?? {});
     for (const [k, v] of Object.entries(preset.mixer ?? {})) mixer.set(k, { ...defaultChannelMix(), ...v });
-    for (const c of channelsOf(song)) if (!mixer.has(c.key)) mixer.set(c.key, defaultChannelMix());
+    for (const c of channelsOf(song)) if (!mixer.has(c.key)) mixer.set(c.key, newChannelMix(c));
     saveConfig(); // persist the loaded project under its song id
     had = true;
   } else {
@@ -889,7 +899,7 @@ function resetToDefaults(): void {
   try { localStorage.removeItem(cfgKey(songId)); } catch {}
   for (const k of Object.keys(voiceOverrides)) delete voiceOverrides[k];
   mixer.clear();
-  for (const c of channelsOf(song)) mixer.set(c.key, defaultChannelMix());
+  for (const c of channelsOf(song)) mixer.set(c.key, newChannelMix(c));
   if (synth) synth.setMixer(mixer);
   applyOptions();
   buildEditor();
