@@ -70,30 +70,59 @@ function makeBP(fc: number, q: number) {
   };
 }
 
-// Six inharmonic ratios — the classic analog-drum trick for a METALLIC timbre.
+// Inharmonic ratios — the classic analog-drum trick for a METALLIC timbre.
 // Filtered noise alone reads as "shh"; summing detuned square partials makes the
 // clangy "tss" of a real hi-hat / cymbal (their vibration modes are inharmonic).
-const METAL = [2, 3, 4.16, 5.43, 6.79, 8.21];
+// A DENSE set (nine partials, no near-octave pairs) so the sheen doesn't collapse
+// to a pitched buzz — six partials with a 2:3 pair rang an audible dissonant
+// chord that, repeated hundreds of times a bar, sounds uneasy.
+const METAL = [2.13, 3.37, 4.61, 5.43, 6.79, 8.21, 9.94, 11.67, 13.42];
 
 /**
- * Metallic percussion (hats, cymbals, ride): six square oscillators at
- * inharmonic ratios of `f0`, high-passed, blended with a little noise, decaying.
+ * Metallic percussion (hats, ride shimmer): dense inharmonic square partials,
+ * high-passed, blended with noise, decaying. Each hit gets a small random pitch
+ * jitter — real hats vary slightly strike to strike, and without it a repeated
+ * hat is a static monotone that reads as "buzzy".
  */
 function metallic(n: number, f0: number, ampTau: number, hpA: number, noiseMix: number): Float32Array {
+  f0 *= 1 + (Math.random() * 2 - 1) * 0.05; // ±5% per-hit jitter
   const out = new Float32Array(n);
   const hp = makeHP(hpA);
-  const ph = new Float64Array(6);
+  const np = METAL.length;
+  const ph = new Float64Array(np);
   const inc = METAL.map((r) => (f0 * r) / SR);
   for (let k = 0; k < n; k++) {
     let s = 0;
-    for (let o = 0; o < 6; o++) {
+    for (let o = 0; o < np; o++) {
       s += ph[o] < 0.5 ? 1 : -1;
       ph[o] += inc[o];
       if (ph[o] >= 1) ph[o] -= 1;
     }
-    s /= 6;
+    s /= np;
     s = (1 - noiseMix) * s + noiseMix * rnd();
     out[k] = hp(s) * Math.exp(-(k / SR) / ampTau);
+  }
+  return out;
+}
+
+// A ride/bell "ting" is pitched, but a bare sine reads as a test tone. Real bell
+// metal rings a few inharmonic modes at once — these ratios + amplitudes give a
+// clear pitch with a metallic edge instead of a naked beep.
+const BELL_MODES = [1, 1.48, 1.97, 2.54, 3.09];
+const BELL_AMPS = [1, 0.62, 0.46, 0.32, 0.22];
+function bellTone(n: number, f0: number, ampTau: number): Float32Array {
+  f0 *= 1 + (Math.random() * 2 - 1) * 0.03; // slight per-hit variation
+  const out = new Float32Array(n);
+  const ph = new Float64Array(BELL_MODES.length);
+  const norm = BELL_AMPS.reduce((a, b) => a + b, 0);
+  for (let k = 0; k < n; k++) {
+    let s = 0;
+    for (let o = 0; o < BELL_MODES.length; o++) {
+      s += BELL_AMPS[o] * Math.sin(2 * Math.PI * ph[o]);
+      ph[o] += (f0 * BELL_MODES[o]) / SR;
+      if (ph[o] >= 1) ph[o] -= 1;
+    }
+    out[k] = (s / norm) * Math.exp(-(k / SR) / ampTau);
   }
   return out;
 }
@@ -199,14 +228,14 @@ export function renderDrum(note: number, velocity: number): Float32Array {
       gain = 0.9;
       break;
     }
-    case 42: // Closed Hi-Hat — metallic, tight decay
+    case 42: // Closed Hi-Hat — tight, noise-forward "tick"
     case 44: // Pedal Hi-Hat
-      buf = metallic(secs(0.05), 1150, 0.028, 0.55, 0.35);
-      gain = 0.4;
+      buf = metallic(secs(0.045), 1250, 0.02, 0.68, 0.5);
+      gain = 0.38;
       break;
-    case 46: // Open Hi-Hat — metallic, long decay
-      buf = metallic(secs(0.35), 1150, 0.14, 0.55, 0.35);
-      gain = 0.42;
+    case 46: // Open Hi-Hat — longer, airier
+      buf = metallic(secs(0.32), 1250, 0.13, 0.68, 0.5);
+      gain = 0.4;
       break;
     case 49: // Crash 1 — dense metallic bloom
     case 57: // Crash 2
@@ -221,15 +250,23 @@ export function renderDrum(note: number, velocity: number): Float32Array {
       buf = crashCymbal(secs(0.5), 760, 0.3, 0.14);
       gain = 0.75;
       break;
-    case 51: // Ride — metallic ping (bell + shimmer)
-    case 53: // Ride Bell
+    case 51: // Ride — a soft stick "ting" riding on a shimmer wash
     case 59: {
-      const n = secs(0.5);
-      const bell = thump(n, 2400, 2400, 1, 0.35, 0); // the "ping"
-      const shimmer = metallic(n, 1400, 0.3, 0.5, 0.4);
+      const n = secs(0.6);
+      const ping = bellTone(n, 620, 0.25);
+      const shimmer = metallic(n, 1500, 0.3, 0.6, 0.3);
       buf = new Float32Array(n);
-      for (let k = 0; k < n; k++) buf[k] = 0.3 * bell[k] + 0.55 * shimmer[k];
-      gain = 0.42;
+      for (let k = 0; k < n; k++) buf[k] = 0.3 * ping[k] + 0.5 * shimmer[k];
+      gain = 0.4;
+      break;
+    }
+    case 53: { // Ride Bell — a clear, bright bell "ting" (bell-forward)
+      const n = secs(0.55);
+      const ping = bellTone(n, 760, 0.34);
+      const shimmer = metallic(n, 1650, 0.2, 0.6, 0.22);
+      buf = new Float32Array(n);
+      for (let k = 0; k < n; k++) buf[k] = 0.55 * ping[k] + 0.25 * shimmer[k];
+      gain = 0.4;
       break;
     }
     case 54: // Tambourine
