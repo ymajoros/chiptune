@@ -31,6 +31,7 @@ import {
   type Delay,
   type FormantConfig,
   type SympatheticVoice,
+  type AmpConfig,
   Compressor,
   VOWELS,
   gmVoiceFor,
@@ -77,6 +78,55 @@ function bandpass(f: number, q: number): Biquad {
   const alpha = Math.sin(w0) / (2 * Math.max(q, 0.1));
   const a0 = 1 + alpha;
   return { b0: alpha / a0, b1: 0, b2: -alpha / a0, a1: (-2 * Math.cos(w0)) / a0, a2: (1 - alpha) / a0 };
+}
+/** RBJ low-pass (2-pole) — the speaker cabinet's high roll-off. */
+function lowpass(f: number, q: number): Biquad {
+  const w0 = (2 * Math.PI * Math.min(f, SR * 0.45)) / SR;
+  const c = Math.cos(w0), alpha = Math.sin(w0) / (2 * Math.max(q, 0.1));
+  const a0 = 1 + alpha;
+  return { b0: ((1 - c) / 2) / a0, b1: (1 - c) / a0, b2: ((1 - c) / 2) / a0, a1: (-2 * c) / a0, a2: (1 - alpha) / a0 };
+}
+/** RBJ peaking EQ — the amp's midrange presence bump. */
+function peaking(f: number, q: number, gainDb: number): Biquad {
+  const w0 = (2 * Math.PI * f) / SR;
+  const c = Math.cos(w0), alpha = Math.sin(w0) / (2 * Math.max(q, 0.1)), A = 10 ** (gainDb / 40);
+  const a0 = 1 + alpha / A;
+  return { b0: (1 + alpha * A) / a0, b1: (-2 * c) / a0, b2: (1 - alpha * A) / a0, a1: (-2 * c) / a0, a2: (1 - alpha / A) / a0 };
+}
+
+/** One biquad's stateful sample step. */
+function biquad(c: Biquad, s: number[], x: number): number {
+  const y = c.b0 * x + c.b1 * s[0] + c.b2 * s[1] - c.a1 * s[2] - c.a2 * s[3];
+  s[1] = s[0]; s[0] = x; s[3] = s[2]; s[2] = y;
+  return y;
+}
+
+/**
+ * Guitar amp + speaker-cabinet stage (per voice): high-pass (kill rumble) ->
+ * tube-ish soft clip -> midrange presence peak -> cabinet low-pass -> makeup.
+ * The cabinet low-pass is the big "electric guitar" cue a bare string lacks.
+ */
+class AmpStage {
+  private hpLp = 0;
+  private readonly hpA = 1 - Math.exp((-2 * Math.PI * 90) / SR); // ~90 Hz high-pass
+  private readonly pk: Biquad; private readonly pkS = [0, 0, 0, 0];
+  private readonly lp: Biquad; private readonly lpS = [0, 0, 0, 0];
+  private readonly drive: number; private readonly driveNorm: number; private readonly level: number;
+  constructor(cfg: AmpConfig) {
+    this.pk = peaking(2200, 1.0, 5 * Math.min(Math.max(cfg.presence, 0), 1)); // up to +5 dB
+    this.lp = lowpass(cfg.cabLow, 0.7);
+    this.drive = Math.max(1, cfg.drive);
+    this.driveNorm = 1 / Math.tanh(this.drive);
+    this.level = cfg.level;
+  }
+  process(x: number): number {
+    this.hpLp += this.hpA * (x - this.hpLp);
+    x = x - this.hpLp; // high-pass
+    x = Math.tanh(x * this.drive) * this.driveNorm; // tube-ish soft clip
+    x = biquad(this.pk, this.pkS, x); // presence
+    x = biquad(this.lp, this.lpS, x); // cabinet roll-off
+    return x * this.level;
+  }
 }
 
 // ---- per-channel mixer state ----
@@ -149,6 +199,7 @@ class PitchedVoice implements RtVoice {
   private dX1 = 0; private dY1 = 0; private tX1 = 0; private tY1 = 0; private dampPrev = 0; // KS loop filter state
   private bodyC?: (Biquad & { g: number })[]; // modal body resonator bank
   private bodyState?: Float64Array; // [x1,x2,y1,y2] per body mode
+  private ampStage?: AmpStage; // guitar amp + cabinet voicing
 
   constructor(note: Note, v: Voice, vib: Vibrato | undefined, chanKey: string, firstOffset: number) {
     this.chanKey = chanKey;
@@ -187,6 +238,7 @@ class PitchedVoice implements RtVoice {
     } else {
       this.engine = "add";
     }
+    if (v.amp) this.ampStage = new AmpStage(v.amp);
   }
 
   private initUnison(voices: number, detune: number, freq: number): void {
@@ -374,6 +426,13 @@ class PitchedVoice implements RtVoice {
           this.k++;
         }
         break;
+      }
+    }
+    // amp/cabinet voicing (electric guitar): post-process the enveloped output
+    if (this.ampStage) {
+      for (let i = start; i < end; i++) {
+        let y = this.ampStage.process(scratch[i]);
+        scratch[i] = Number.isFinite(y) ? y : 0;
       }
     }
     if (this.k >= this.n) this.done = true;

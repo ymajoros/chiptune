@@ -614,10 +614,18 @@ function renderInstrumentEditor(): void {
       ${NUM("Ring time", key, "sympathetic", "feedback", sy?.feedback ?? 0.55, 0, 0.95, 0.02)}
     </div><span class="filelabel">The instrument's own open strings ringing along (guitar-tuned by default). 0 = off.</span>`;
 
+  const am = voice.amp;
+  const ampHtml = `<h3>Amp / cabinet (electric)</h3><div class="grid">
+      ${NUM("Drive", key, "amp", "drive", am?.drive ?? 1, 1, 5, 0.1)}
+      ${NUM("Presence", key, "amp", "presence", am?.presence ?? 0, 0, 1, 0.05)}
+      ${NUM("Cab cutoff (Hz)", key, "amp", "cabLow", am?.cabLow ?? 20000, 1500, 20000, 100)}
+      ${NUM("Level", key, "amp", "level", am?.level ?? 1, 0, 2, 0.05)}
+    </div><span class="filelabel">Speaker-cabinet + tube voicing (makes a string read as a clean electric). Cutoff 20000 + drive 1 = effectively off.</span>`;
+
   els.instEditor.innerHTML =
     `<div class="row"><strong>Track ${info?.track} · Ch ${(info?.channel ?? 0) + 1}</strong>
        <span class="filelabel">GM: ${gmName} — change instrument or engine, edits are heard live &amp; on the keyboard below.</span></div>
-     ${engineSel}${common}${params}${symHtml}`;
+     ${engineSel}${common}${params}${symHtml}${ampHtml}`;
 }
 
 function harmRow(i: number, h: Harmonic): string {
@@ -656,6 +664,10 @@ els.instEditor.addEventListener("input", (e) => {
     // current voice (guitar open strings if none), edit only mix / ring-time here.
     const base = ov.sympathetic ?? resolveVoice(key).voice.sympathetic ?? { strings: [40, 45, 50, 55, 59, 64], feedback: 0.55, damping: 0.35, mix: 0 };
     ov.sympathetic = { ...base, [sub]: Number(t.value) };
+  }
+  else if (field === "amp") {
+    const base = ov.amp ?? resolveVoice(key).voice.amp ?? { drive: 1, presence: 0, cabLow: 20000, level: 1 };
+    ov.amp = { ...base, [sub]: Number(t.value) };
   }
   else {
     // engine param: mutate a copy of the full engine config

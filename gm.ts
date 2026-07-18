@@ -8,7 +8,7 @@
  * the 16 GM families (each 8 programs), with a few per-instrument overrides.
  */
 
-import type { FmConfig, SubConfig, KsConfig, FormantConfig, Harmonic, SympatheticVoice } from "./synth.ts";
+import type { FmConfig, SubConfig, KsConfig, FormantConfig, Harmonic, SympatheticVoice, AmpConfig } from "./synth.ts";
 
 /** The timbre half of RenderOptions — one instrument's voice. */
 export interface Voice {
@@ -22,12 +22,14 @@ export interface Voice {
   ks?: KsConfig;
   formant?: FormantConfig;
   sympathetic?: SympatheticVoice;
+  amp?: AmpConfig;
 }
 
 const fm = (ratio: number, index: number, decay: number, sustain: number): FmConfig => ({ ratio, index, decay, sustain });
 const sub = (wave: "saw" | "square", cutoff: number, resonance: number, envAmount: number, envDecay: number, detune: number, voices: number, drive = 1): SubConfig => ({ wave, cutoff, resonance, envAmount, envDecay, detune, voices, drive });
 const ks = (decay: number, damping: number, body = 0, stiffness = 0, pick = 0, tone = 1): KsConfig => ({ decay, damping, body, stiffness, pick, tone });
 const symp = (strings: number[], feedback: number, damping: number, mix: number): SympatheticVoice => ({ strings, feedback, damping, mix });
+const cab = (drive: number, presence: number, cabLow: number, level: number): AmpConfig => ({ drive, presence, cabLow, level });
 const GTR_STRINGS = [40, 45, 50, 55, 59, 64]; // guitar open strings E2 A2 D3 G3 B3 E4
 
 // --- family defaults (program >> 3 selects the family) ---
@@ -95,7 +97,7 @@ const OVERRIDE: Record<number, Voice> = {
   // between. Voiced by ear against a real recording of the arrangement.
   24: { attack: 0.008, release: 0.14, gain: 0.95, ks: ks(0.995, 0.66, 0.52, 0.04, 0.34, 0.3), sympathetic: symp(GTR_STRINGS, 0.5, 0.4, 0.14) }, // Nylon Guitar — warm, woody, most acoustic
   25: { attack: 0.008, release: 0.18, gain: 0.88, ks: ks(0.997, 0.5, 0.28, 0.07, 0.18, 0.5), sympathetic: symp(GTR_STRINGS, 0.6, 0.32, 0.2) }, // Steel Guitar — metallic but warm/realistic
-  27: { attack: 0.022, release: 0.16, gain: 0.9, ks: ks(0.996, 0.54, 0.1, 0.02, 0.26, 0.4), sympathetic: symp(GTR_STRINGS, 0.55, 0.35, 0.18) }, // Clean Guitar — electric, in-between nylon and steel
+  27: { attack: 0.022, release: 0.16, gain: 0.9, ks: ks(0.996, 0.54, 0.1, 0.02, 0.26, 0.4), sympathetic: symp(GTR_STRINGS, 0.55, 0.35, 0.18), amp: cab(1.4, 0.7, 4500, 1.15) }, // Clean Guitar — electric, in-between nylon and steel
   80: { attack: 0.005, release: 0.06, gain: 0.8, sub: sub("square", 2200, 0.3, 1400, 0.3, 4, 2) }, // Square Lead
 };
 
