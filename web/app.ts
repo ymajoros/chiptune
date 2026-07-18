@@ -212,9 +212,15 @@ function channelsOf(s: Song): ChanInfo[] {
 // own CC91 reverb depth (never on drums) — the user then enables/adjusts it per
 // track, which the mixer/.chip persists. So instruments that ask for reverb get
 // it, drums stay dry, and nothing is drenched by default.
+//
+// CC91 depths are raw producer intent for a real hall and read *way* too wet
+// through our big Freeverb bus (a CC91≈92 channel seeds ~0.72, drenched). We
+// scale the seed down so a typical CC91 lands at a present-but-subtle send; the
+// user's per-channel slider still spans the full 0..1, so they can crank it.
+const REVERB_SEED_SCALE = 0.5;
 function newChannelMix(c: ChanInfo): ChannelMix {
   const m = defaultChannelMix();
-  m.reverbSend = c.isDrum ? 0 : (song.reverb?.[c.key] ?? 0);
+  m.reverbSend = c.isDrum ? 0 : (song.reverb?.[c.key] ?? 0) * REVERB_SEED_SCALE;
   return m;
 }
 
