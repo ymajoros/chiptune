@@ -612,7 +612,15 @@ class SympatheticBank {
   input: Float32Array = new Float32Array(0); // this block's channel signal
 
   constructor(cfg: SympatheticVoice) {
-    const freqs = cfg.strings.map((m) => 440 * 2 ** ((m - 69) / 12));
+    // A resonator bank driven live from the instrument editor's "Ring time"
+    // (feedback) slider must never be able to blow up: sanitize every config
+    // field before it reaches the loop. feedback is capped strictly below 1 so a
+    // high setting just rings *longer* (a longer natural decay) instead of turning
+    // the tanh feedback path into a runaway self-oscillator.
+    const clamp = (x: number, lo: number, hi: number, dflt: number) =>
+      Number.isFinite(x) ? Math.min(Math.max(x, lo), hi) : dflt;
+    const strings = (cfg.strings ?? []).filter((m) => Number.isFinite(m));
+    const freqs = (strings.length ? strings : [40, 45, 50, 55, 59, 64]).map((m) => 440 * 2 ** ((m - 69) / 12));
     this.N = freqs.length;
     this.lines = freqs.map((f) => new Float32Array(Math.max(2, Math.round(SR / f))));
     this.idx = new Int32Array(this.N);
@@ -628,9 +636,9 @@ class SympatheticBank {
         const d = Math.abs(semis[i] - semis[j]);
         if (d === 12 || d === 7) this.coupled[i].push(j); // octave / fifth bridge coupling
       }
-    this.feedback = cfg.feedback;
-    this.damping = cfg.damping;
-    this.mix = cfg.mix;
+    this.feedback = clamp(cfg.feedback, 0, 0.98, 0.55); // < 1 -> always a decaying resonator, never a runaway
+    this.damping = clamp(cfg.damping, 0, 1, 0.35);
+    this.mix = clamp(cfg.mix, 0, 4, 0);
     this.drive = 1.2 / Math.sqrt(this.N);
     this.cf = 1 - Math.exp(-1 / (0.002 * SR)); // fast onset-gate env (~2ms)
     this.cs = 1 - Math.exp(-1 / (0.06 * SR)); // slow onset-gate env (~60ms)
@@ -646,7 +654,7 @@ class SympatheticBank {
   flush(out: Float32Array, N: number): void {
     const inp = this.input;
     for (let k = 0; k < N; k++) {
-      const x = inp[k];
+      const x = Number.isFinite(inp[k]) ? inp[k] : 0; // never let a poisoned bus sample seed the resonators
       const a = Math.abs(x);
       this.envFast += this.cf * (a - this.envFast);
       this.envSlow += this.cs * (a - this.envSlow);
@@ -658,6 +666,7 @@ class SympatheticBank {
         const p = this.idx[i];
         const yD = line[p];
         this.lp[i] += this.damping * (yD - this.lp[i]);
+        if (!Number.isFinite(this.lp[i])) this.lp[i] = 0; // keep the loop filter finite
         let couple = 0;
         const nb = this.coupled[i];
         for (let c = 0; c < nb.length; c++) couple += this.prevOut[nb[c]];
