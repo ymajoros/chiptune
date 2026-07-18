@@ -573,7 +573,7 @@ function renderInstrumentEditor(): void {
       ${NUM("Env decay (s)", key, "sub", "envDecay", s.envDecay, 0.02, 2, 0.02)}
       ${NUM("Detune (cents)", key, "sub", "detune", s.detune, 0, 40, 1)}
       ${NUM("Unison voices", key, "sub", "voices", s.voices, 1, 7, 1)}
-      ${NUM("Drive (distortion)", key, "sub", "drive", s.drive ?? 1, 1, 12, 0.5)}
+      ${NUM("Drive (distortion)", key, "sub", "drive", s.drive ?? 1, 1, 30, 0.5)}
     </div>`;
   } else if (engine === "ks") {
     const k = voice.ks!;

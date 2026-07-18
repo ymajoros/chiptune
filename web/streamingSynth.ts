@@ -277,7 +277,7 @@ class PitchedVoice implements RtVoice {
             this.phases[vv] = ph;
           }
           s /= nv;
-          if (drive > 1) { const d = s * drive; s = d <= -1 ? -1 : d >= 1 ? 1 : 1.5 * d - 0.5 * d * d * d; } // cubic soft-clip overdrive, pre-filter
+          if (drive > 1) { const d = s * drive + 0.2; const c = d <= -1 ? -1 : d >= 1 ? 1 : 1.5 * d - 0.5 * d * d * d; s = c - 0.16; } // cubic soft-clip overdrive, pre-filter
           let fc = sub.cutoff + sub.envAmount * Math.exp(-this.k / envDecaySamples);
           if (fc > SR / 6) fc = SR / 6;
           if (fc < 20) fc = 20;
