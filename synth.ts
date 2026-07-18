@@ -102,6 +102,12 @@ export interface KsConfig {
   decay: number; // feedback gain 0..1; higher -> longer sustain
   damping: number; // 0..1 low-pass blend; higher -> darker, faster high-freq decay
   body?: number; // 0..~0.5 body resonance mix — the "wooden box" of an acoustic
+  stiffness?: number; // 0..1 string stiffness -> inharmonicity (overtones stretch sharp).
+  //   The single biggest "real string vs synth pluck" cue; pianos want a lot.
+  pick?: number; // 0..0.5 pluck position along the string (fraction). Comb-filters the
+  //   excitation: plucking near the bridge (small) is thin/bright, mid-string is round.
+  tone?: number; // 0..1 pick hardness / excitation brightness. 1 = hard/bright (raw noise),
+  //   lower = softer/darker (finger). Default 1 keeps the bare-string sound.
 }
 
 /**
@@ -406,26 +412,87 @@ function bandpass(f: number, q: number): Biquad {
 }
 
 /**
- * Fill `tone` with one Karplus-Strong pluck: a period-length delay line seeded
- * with noise, then repeatedly averaged (low-pass) and attenuated (feedback).
+ * Phase delay (in samples) of a first-order all-pass H(z) = (a + z⁻¹)/(1 + a z⁻¹)
+ * at angular frequency w. Used to compensate the delay-line length so adding the
+ * dispersion all-pass (for string stiffness) doesn't detune the note.
+ */
+export function allpassPhaseDelay(a: number, w: number): number {
+  if (w <= 0) return 0;
+  const s = Math.sin(w), c = Math.cos(w);
+  const phase = Math.atan2(-s, a + c) - Math.atan2(-a * s, 1 + a * c);
+  return -phase / w;
+}
+
+export interface KsSetup {
+  Li: number; // integer delay-line length
+  C: number; // tuning all-pass coefficient (fractional delay, accurate pitch)
+  disp: number; // dispersion all-pass coefficient (string stiffness / inharmonicity)
+  b: number; // damping (loop low-pass blend)
+  decay: number; // feedback gain
+}
+
+/**
+ * Resolve a string's delay-line geometry. A plain KS uses round(SR/freq), which
+ * quantises pitch (audibly "off"/synthetic on high notes) and can't be stiff.
+ * Here the loop delay is split into an integer line + a fractional tuning
+ * all-pass (accurate pitch) plus an optional dispersion all-pass whose extra
+ * delay is subtracted out so stiffness changes timbre, not tuning.
+ */
+export function ksStringSetup(freq: number, ks: KsConfig): KsSetup {
+  const w0 = (2 * Math.PI * freq) / SR;
+  const disp = 0.5 * Math.min(Math.max(ks.stiffness ?? 0, 0), 1); // 0..0.5 (sharpens high partials)
+  const pdDisp = disp !== 0 ? allpassPhaseDelay(disp, w0) : 1; // disp=0 ⇒ z⁻¹ (1 samp)
+  const DAMP_DELAY = 0.5; // the 2-point loop averager's ~½-sample group delay
+  const target = SR / freq - pdDisp - DAMP_DELAY;
+  let Li = Math.floor(target);
+  if (Li < 2) Li = 2;
+  let frac = target - Li;
+  if (frac < 0) frac = 0;
+  else if (frac > 1) frac = 1;
+  const C = (1 - frac) / (1 + frac); // first-order fractional-delay all-pass
+  return { Li, C, disp, b: Math.min(Math.max(ks.damping, 0), 1), decay: ks.decay };
+}
+
+/**
+ * Build a plucked-string excitation of length L: white noise shaped by pick
+ * hardness (`tone`: a low-pass — softer = darker) and pluck position (`pick`:
+ * a comb that nulls the harmonic with a node at the pick point, the way a real
+ * string plucked at 1/5 sounds different from one plucked at the bridge).
+ */
+export function seedString(L: number, pick: number, tone: number): Float32Array {
+  const seed = new Float32Array(L);
+  for (let i = 0; i < L; i++) seed[i] = Math.random() * 2 - 1;
+  const a = 1 - Math.min(Math.max(tone, 0), 1); // tone 1 -> a 0 (bright/raw)
+  if (a > 0) { let lp = 0; for (let i = 0; i < L; i++) { lp = seed[i] + a * (lp - seed[i]); seed[i] = lp; } }
+  const pd = Math.round(Math.min(Math.max(pick, 0), 0.5) * L);
+  if (pd > 0 && pd < L) { const cp = seed.slice(); for (let i = 0; i < L; i++) seed[i] = cp[i] - (i >= pd ? cp[i - pd] : 0); }
+  return seed;
+}
+
+/**
+ * Fill `tone` with one plucked/struck string. An extended Karplus-Strong: a
+ * noise-seeded delay line with a damping low-pass and decay feedback, plus a
+ * dispersion all-pass (stiffness → stretched, inharmonic overtones) and a
+ * fractional-delay all-pass (accurate pitch), tapped through the body resonators.
  */
 function renderKs(tone: Float32Array, ks: KsConfig, freq: number, amp: number): void {
   const n = tone.length;
-  const L = Math.max(2, Math.round(SR / freq)); // delay length = one period
-  const line = new Float32Array(L);
-  for (let i = 0; i < L; i++) line[i] = Math.random() * 2 - 1; // pluck excitation
-  const b = Math.min(Math.max(ks.damping, 0), 1); // low-pass blend
-  // body resonance: two band-passes at the guitar's air/wood modes (~110/230 Hz).
-  // A bare KS string is just that — a string; the body is what makes it sound
-  // like a guitar rather than a synth pluck.
+  const { Li, C, disp, b, decay } = ksStringSetup(freq, ks);
+  const line = seedString(Li, ks.pick ?? 0, ks.tone ?? 1);
   const body = ks.body ?? 0;
-  const c1 = bandpass(110, 2.5);
-  const c2 = bandpass(230, 3);
+  const c1 = bandpass(110, 2.5), c2 = bandpass(230, 3);
   let x1a = 0, x2a = 0, y1a = 0, y2a = 0, x1b = 0, x2b = 0, y1b = 0, y2b = 0;
-  let idx = 0;
+  let dX1 = 0, dY1 = 0, tX1 = 0, tY1 = 0, dampPrev = 0, idx = 0;
   for (let k = 0; k < n; k++) {
-    const cur = line[idx];
-    const nxt = line[(idx + 1) % L];
+    const cur = line[idx]; // string output = the delayed sample
+    // feedback chain: dispersion all-pass -> tuning all-pass -> damping -> decay
+    const dOut = disp * cur + dX1 - disp * dY1; dX1 = cur; dY1 = dOut;
+    const tOut = C * dOut + tX1 - C * tY1; tX1 = dOut; tY1 = tOut;
+    const lp = (1 - b) * tOut + b * dampPrev; dampPrev = tOut;
+    let fb = lp * decay;
+    if (!Number.isFinite(fb)) fb = 0; // self-heal: never let the loop latch to NaN
+    line[idx] = fb;
+    idx = idx + 1 === Li ? 0 : idx + 1;
     let out = cur;
     if (body > 0) {
       const ya = c1.b0 * cur + c1.b1 * x1a + c1.b2 * x2a - c1.a1 * y1a - c1.a2 * y2a;
@@ -435,8 +502,6 @@ function renderKs(tone: Float32Array, ks: KsConfig, freq: number, amp: number): 
       out = cur + body * (ya + yb);
     }
     tone[k] = out * amp;
-    line[idx] = (cur * (1 - b) + nxt * b) * ks.decay; // low-pass + decay feedback
-    idx = idx + 1 === L ? 0 : idx + 1;
   }
 }
 
