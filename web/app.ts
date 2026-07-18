@@ -621,7 +621,12 @@ function renderInstrumentEditor(): void {
       ${NUM("Stiffness (inharmonic)", key, "ks", "stiffness", k.stiffness ?? 0, 0, 1, 0.02)}
       ${NUM("Pick position", key, "ks", "pick", k.pick ?? 0, 0, 0.5, 0.02)}
       ${NUM("Pick hardness (tone)", key, "ks", "tone", k.tone ?? 1, 0, 1, 0.02)}
-    </div>`;
+      ${NUM("Strings (unison)", key, "ks", "strings", k.strings ?? 1, 1, 3, 1)}
+      ${NUM("Detune (cents)", key, "ks", "spread", k.spread ?? 0, 0, 30, 0.5)}
+      ${NUM("Vel→brightness", key, "ks", "velBright", k.velBright ?? 0, 0, 1, 0.05)}
+      ${NUM("Release damping", key, "ks", "releaseDamp", k.releaseDamp ?? 0, 0, 1, 0.05)}
+      ${NUM("Pluck noise", key, "ks", "pluckNoise", k.pluckNoise ?? 0, 0, 0.5, 0.02)}
+    </div><span class="filelabel">Strings 2–3 + Detune = beating/chorus (piano, 12-string). Vel→brightness: harder = brighter. Release damping: choke on note-off. Pluck noise: pick/hammer tick. All 0/1 = off.</span>`;
   } else {
     const fo = voice.formant!;
     params = `<h3>Formant (vocal)</h3>

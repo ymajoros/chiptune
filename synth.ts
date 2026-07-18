@@ -108,6 +108,15 @@ export interface KsConfig {
   //   excitation: plucking near the bridge (small) is thin/bright, mid-string is round.
   tone?: number; // 0..1 pick hardness / excitation brightness. 1 = hard/bright (raw noise),
   //   lower = softer/darker (finger). Default 1 keeps the bare-string sound.
+  strings?: number; // 1..3 detuned strings per note (piano/12-string/chorused). Each is its
+  //   own KS delay line, summed -> beating/shimmer + a stronger attack. Default 1 = one string.
+  spread?: number; // cents of detune across the `strings` (0 -> perfect unison, no beating).
+  velBright?: number; // 0..1 velocity -> excitation brightness: a harder pluck is brighter (raises
+  //   the effective pick `tone` with velocity). 0 = off (velocity only scales level, as before).
+  releaseDamp?: number; // 0..1 extra damping applied over the note's release: a released string is
+  //   choked (faster high-freq + amplitude decay) as a player mutes it. 0 = just fade out, as before.
+  pluckNoise?: number; // 0..~0.5 short broadband pick/finger contact-noise transient at the attack.
+  //   0 = clean (bare string). A little adds the "click" of a real pick/hammer touching the string.
 }
 
 /**
@@ -343,6 +352,7 @@ function renderSub(
     low += f * band;
     const high = s - low - q1 * band;
     band += f * high;
+    if (!Number.isFinite(low) || !Number.isFinite(band)) { low = 0; band = 0; } // self-heal a rung-up filter
 
     tone[k] = low * amp;
   }
@@ -522,36 +532,78 @@ export function seedString(L: number, pick: number, tone: number): Float32Array 
  * dispersion all-pass (stiffness → stretched, inharmonic overtones) and a
  * fractional-delay all-pass (accurate pitch), tapped through the body resonators.
  */
-function renderKs(tone: Float32Array, ks: KsConfig, freq: number, amp: number): void {
+function renderKs(
+  tone: Float32Array,
+  ks: KsConfig,
+  freq: number,
+  amp: number,
+  vel = 1, // normalized note velocity 0..1 (drives velBright)
+  relSamples = 0, // length of the note's release window in samples (drives releaseDamp)
+): void {
   const n = tone.length;
-  const { Li, C, disp, b, decay } = ksStringSetup(freq, ks);
-  const line = seedString(Li, ks.pick ?? 0, ks.tone ?? 1);
+  // velocity -> brightness: a harder pluck raises the effective pick `tone` (brighter seed).
+  const velBright = Math.min(Math.max(ks.velBright ?? 0, 0), 1);
+  const effTone = Math.min(Math.max((ks.tone ?? 1) + velBright * (vel - 0.5), 0), 1);
+  // multi-string unison: `ns` detuned strings summed -> beating/shimmer & a fuller attack.
+  const ns = Math.min(Math.max(Math.floor(ks.strings ?? 1), 1), 3);
+  const spread = ks.spread ?? 0;
+  const norm = 1 / Math.sqrt(ns); // partially-incoherent sum: ns=1 -> 1 (no change)
+  const lines: Float32Array[] = [];
+  const Li = new Int32Array(ns), disp = new Float64Array(ns), C = new Float64Array(ns), idx = new Int32Array(ns);
+  const dX1 = new Float64Array(ns), dY1 = new Float64Array(ns), tX1 = new Float64Array(ns), tY1 = new Float64Array(ns), dampPrev = new Float64Array(ns);
+  let b = 0, decay = 1;
+  for (let s = 0; s < ns; s++) {
+    const cents = ns > 1 ? (s / (ns - 1) - 0.5) * spread : 0;
+    const setup = ksStringSetup(freq * 2 ** (cents / 1200), ks);
+    Li[s] = setup.Li; disp[s] = setup.disp; C[s] = setup.C; b = setup.b; decay = setup.decay;
+    lines[s] = seedString(setup.Li, ks.pick ?? 0, effTone);
+  }
   const body = ks.body ?? 0;
   // modal body: one band-pass per body mode, summed (a resonator-bank "body IR")
   const bodyC = body > 0 ? BODY_MODES.map((m) => ({ ...bandpass(m.f, m.q), g: m.g })) : [];
   const bst = new Float64Array(bodyC.length * 4); // [x1,x2,y1,y2] per mode
-  let dX1 = 0, dY1 = 0, tX1 = 0, tY1 = 0, dampPrev = 0, idx = 0;
+  // release damping: over the last `relSamples` the string is choked (b->1, decay drops).
+  const relDamp = Math.min(Math.max(ks.releaseDamp ?? 0, 0), 1);
+  const relStart = relDamp > 0 && relSamples > 0 ? n - relSamples : n;
+  const pluckNoise = Math.min(Math.max(ks.pluckNoise ?? 0, 0), 1);
+  const noiseLen = pluckNoise > 0 ? Math.floor(0.006 * SR) : 0; // ~6 ms contact transient
+  const noiseTau = 0.0015 * SR;
   for (let k = 0; k < n; k++) {
-    const cur = line[idx]; // string output = the delayed sample
-    // feedback chain: dispersion all-pass -> tuning all-pass -> damping -> decay
-    const dOut = disp * cur + dX1 - disp * dY1; dX1 = cur; dY1 = dOut;
-    const tOut = C * dOut + tX1 - C * tY1; tX1 = dOut; tY1 = tOut;
-    const lp = (1 - b) * tOut + b * dampPrev; dampPrev = tOut;
-    let fb = lp * decay;
-    if (!Number.isFinite(fb)) fb = 0; // self-heal: never let the loop latch to NaN
-    line[idx] = fb;
-    idx = idx + 1 === Li ? 0 : idx + 1;
-    let out = cur;
+    // release damping ramp: 0 while held, rising to relDamp across the release window
+    let bK = b, decayK = decay;
+    if (k >= relStart) {
+      const rt = (k - relStart) / Math.max(relSamples, 1);
+      bK = b + (1 - b) * relDamp * rt;
+      decayK = decay * (1 - 0.5 * relDamp * rt);
+    }
+    let mix = 0;
+    for (let s = 0; s < ns; s++) {
+      const line = lines[s];
+      const cur = line[idx[s]]; // string output = the delayed sample
+      // feedback chain: dispersion all-pass -> tuning all-pass -> damping -> decay
+      const dOut = disp[s] * cur + dX1[s] - disp[s] * dY1[s]; dX1[s] = cur; dY1[s] = dOut;
+      const tOut = C[s] * dOut + tX1[s] - C[s] * tY1[s]; tX1[s] = dOut; tY1[s] = tOut;
+      const lp = (1 - bK) * tOut + bK * dampPrev[s]; dampPrev[s] = tOut;
+      let fb = lp * decayK;
+      if (!Number.isFinite(fb)) fb = 0; // self-heal: never let the loop latch to NaN
+      line[idx[s]] = fb;
+      idx[s] = idx[s] + 1 === Li[s] ? 0 : idx[s] + 1;
+      mix += cur;
+    }
+    mix *= norm;
+    let out = mix;
     if (body > 0) {
       let bsum = 0;
       for (let m = 0; m < bodyC.length; m++) {
         const c = bodyC[m], o = m * 4;
-        const y = c.b0 * cur + c.b1 * bst[o] + c.b2 * bst[o + 1] - c.a1 * bst[o + 2] - c.a2 * bst[o + 3];
-        bst[o + 1] = bst[o]; bst[o] = cur; bst[o + 3] = bst[o + 2]; bst[o + 2] = y;
+        const y = c.b0 * mix + c.b1 * bst[o] + c.b2 * bst[o + 1] - c.a1 * bst[o + 2] - c.a2 * bst[o + 3];
+        bst[o + 1] = bst[o]; bst[o] = mix; bst[o + 3] = bst[o + 2]; bst[o + 2] = y;
         bsum += c.g * y;
       }
-      out = cur + body * BODY_NORM * bsum;
+      out = mix + body * BODY_NORM * bsum;
     }
+    // pick/finger contact noise: a short bright broadband transient at the attack
+    if (k < noiseLen) out += (Math.random() * 2 - 1) * pluckNoise * Math.exp(-k / noiseTau);
     tone[k] = out * amp;
   }
 }
@@ -578,11 +630,14 @@ function renderTone(
   amp: number,
   v: Voice,
   vibrato: Vibrato | undefined,
+  vel = 1, // normalized note velocity 0..1 (KS velBright)
 ): Float32Array {
   const inc0 = freq / SR;
   const tone = new Float32Array(n);
   if (v.ks) {
-    renderKs(tone, v.ks, freq, amp);
+    // release window matches applyEnvelope's, so KS release-damping lines up with the fade
+    const rel = Math.min(Math.floor(v.release * SR), n >> 1);
+    renderKs(tone, v.ks, freq, amp, vel, rel);
   } else if (v.formant) {
     renderFormant(tone, v.formant, freq, amp, vibrato);
   } else if (v.sub) {
@@ -642,7 +697,7 @@ function renderDry(song: Song, opts: RenderOptions, voiceFor?: (note: Note) => V
     const freq = midiToHz(pitch);
     const amp = (note.velocity / 127) ** 1.5 * 0.25 * (v.gain ?? 1);
 
-    const tone = renderTone(n, freq, amp, v, opts.vibrato);
+    const tone = renderTone(n, freq, amp, v, opts.vibrato, note.velocity / 127);
     const start = Math.floor(note.start * SR);
     for (let k = 0; k < n; k++) buf[start + k] += tone[k]; // <-- additive mixing
   }

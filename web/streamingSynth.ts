@@ -195,9 +195,10 @@ export class PitchedVoice implements RtVoice {
   private low = 0; private band = 0; // sub SVF
   private fx1 = [0, 0, 0]; private fx2 = [0, 0, 0]; private fy1 = [0, 0, 0]; private fy2 = [0, 0, 0]; // formant biquads
   private co: Biquad[] = []; private A!: { f: number[]; g: number[]; bw: number[] }; private B!: { f: number[]; g: number[]; bw: number[] }; private morph = false;
-  private line!: Float32Array; private idx = 0; private ksB = 0; // KS
-  private ksC = 0; private ksDisp = 0; private ksDecay = 1; // tuning/dispersion/decay coeffs
-  private dX1 = 0; private dY1 = 0; private tX1 = 0; private tY1 = 0; private dampPrev = 0; // KS loop filter state
+  private ksLines: Float32Array[] = []; private ksIdx!: Int32Array; private ksLi!: Int32Array; // KS: per-string delay lines
+  private ksC!: Float64Array; private ksDisp!: Float64Array; private ksB = 0; private ksDecay = 1; // per-string tuning/dispersion coeffs; shared damping/decay
+  private ksNorm = 1; // multi-string sum normalization (1/sqrt(strings))
+  private dX1!: Float64Array; private dY1!: Float64Array; private tX1!: Float64Array; private tY1!: Float64Array; private dampPrev!: Float64Array; // KS loop filter state (per string)
   private bodyC?: (Biquad & { g: number })[]; // modal body resonator bank
   private bodyState?: Float64Array; // [x1,x2,y1,y2] per body mode
   private ampStage?: AmpStage; // guitar amp + cabinet voicing
@@ -219,9 +220,22 @@ export class PitchedVoice implements RtVoice {
 
     if (v.ks) {
       this.engine = "ks";
-      const setup = ksStringSetup(freq, v.ks);
-      this.line = seedString(setup.Li, v.ks.pick ?? 0, v.ks.tone ?? 1);
-      this.ksB = setup.b; this.ksC = setup.C; this.ksDisp = setup.disp; this.ksDecay = setup.decay;
+      // velocity -> brightness: a harder pluck raises the effective pick `tone` (mirrors renderKs)
+      const velBright = Math.min(Math.max(v.ks.velBright ?? 0, 0), 1);
+      const vel = note.velocity / 127;
+      const effTone = Math.min(Math.max((v.ks.tone ?? 1) + velBright * (vel - 0.5), 0), 1);
+      // multi-string unison: `ns` detuned strings, each its own delay line, summed
+      const ns = Math.min(Math.max(Math.floor(v.ks.strings ?? 1), 1), 3);
+      const spread = v.ks.spread ?? 0;
+      this.ksNorm = 1 / Math.sqrt(ns);
+      this.ksLi = new Int32Array(ns); this.ksC = new Float64Array(ns); this.ksDisp = new Float64Array(ns); this.ksIdx = new Int32Array(ns);
+      this.dX1 = new Float64Array(ns); this.dY1 = new Float64Array(ns); this.tX1 = new Float64Array(ns); this.tY1 = new Float64Array(ns); this.dampPrev = new Float64Array(ns);
+      for (let s = 0; s < ns; s++) {
+        const cents = ns > 1 ? (s / (ns - 1) - 0.5) * spread : 0;
+        const setup = ksStringSetup(freq * 2 ** (cents / 1200), v.ks);
+        this.ksLi[s] = setup.Li; this.ksC[s] = setup.C; this.ksDisp[s] = setup.disp; this.ksB = setup.b; this.ksDecay = setup.decay;
+        this.ksLines[s] = seedString(setup.Li, v.ks.pick ?? 0, effTone);
+      }
       if ((v.ks.body ?? 0) > 0) { this.bodyC = BODY_MODES.map((m) => ({ ...bandpass(m.f, m.q), g: m.g })); this.bodyState = new Float64Array(this.bodyC.length * 4); }
     } else if (v.formant) {
       this.engine = "formant";
@@ -412,32 +426,51 @@ export class PitchedVoice implements RtVoice {
       case "ks": {
         // Extended KS: dispersion all-pass (stiffness) -> tuning all-pass -> damping
         // -> decay, in the feedback loop; body resonators on the output tap. Mirrors
-        // renderKs() in synth.ts (setup shared via ksStringSetup/seedString).
-        const L = this.line.length;
-        const b = this.ksB, C = this.ksC, disp = this.ksDisp, decay = this.ksDecay;
+        // renderKs() in synth.ts (setup shared via ksStringSetup/seedString). Multi-
+        // string unison + release-damping are mirrored here too.
+        const ns = this.ksLines.length;
+        const b = this.ksB, decay = this.ksDecay, norm = this.ksNorm;
         const ksBody = this.v.ks?.body ?? 0;
+        const relDamp = Math.min(Math.max(this.v.ks?.releaseDamp ?? 0, 0), 1);
+        const relStart = relDamp > 0 && this.r > 0 ? this.n - this.r : this.n; // matches env() release window
         for (let i = start; i < end; i++) {
           if (this.k >= this.n) { scratch[i] = 0; continue; }
-          const cur = this.line[this.idx];
-          const dOut = disp * cur + this.dX1 - disp * this.dY1; this.dX1 = cur; this.dY1 = dOut;
-          const tOut = C * dOut + this.tX1 - C * this.tY1; this.tX1 = dOut; this.tY1 = tOut;
-          const lp = (1 - b) * tOut + b * this.dampPrev; this.dampPrev = tOut;
-          let fb = lp * decay;
-          if (!Number.isFinite(fb)) fb = 0;
-          this.line[this.idx] = fb;
-          this.idx = this.idx + 1 === L ? 0 : this.idx + 1;
-          let out = cur;
+          // release damping ramp: choke the string (b->1, decay drops) across the release
+          let bK = b, decayK = decay;
+          if (this.k >= relStart) {
+            const rt = (this.k - relStart) / Math.max(this.r, 1);
+            bK = b + (1 - b) * relDamp * rt;
+            decayK = decay * (1 - 0.5 * relDamp * rt);
+          }
+          let mix = 0;
+          for (let s = 0; s < ns; s++) {
+            const line = this.ksLines[s], L = this.ksLi[s], C = this.ksC[s], disp = this.ksDisp[s], p = this.ksIdx[s];
+            const cur = line[p];
+            const dOut = disp * cur + this.dX1[s] - disp * this.dY1[s]; this.dX1[s] = cur; this.dY1[s] = dOut;
+            const tOut = C * dOut + this.tX1[s] - C * this.tY1[s]; this.tX1[s] = dOut; this.tY1[s] = tOut;
+            const lp = (1 - bK) * tOut + bK * this.dampPrev[s]; this.dampPrev[s] = tOut;
+            let fb = lp * decayK;
+            if (!Number.isFinite(fb)) fb = 0;
+            line[p] = fb;
+            this.ksIdx[s] = p + 1 === L ? 0 : p + 1;
+            mix += cur;
+          }
+          mix *= norm;
+          let out = mix;
           if (this.bodyC) { // modal body resonator bank (mirrors renderKs)
             const bc = this.bodyC, bs = this.bodyState!;
             let bsum = 0;
             for (let m = 0; m < bc.length; m++) {
               const c = bc[m], o = m * 4;
-              const y = c.b0 * cur + c.b1 * bs[o] + c.b2 * bs[o + 1] - c.a1 * bs[o + 2] - c.a2 * bs[o + 3];
-              bs[o + 1] = bs[o]; bs[o] = cur; bs[o + 3] = bs[o + 2]; bs[o + 2] = y;
+              const y = c.b0 * mix + c.b1 * bs[o] + c.b2 * bs[o + 1] - c.a1 * bs[o + 2] - c.a2 * bs[o + 3];
+              bs[o + 1] = bs[o]; bs[o] = mix; bs[o + 3] = bs[o + 2]; bs[o + 2] = y;
               bsum += c.g * y;
             }
-            out = cur + ksBody * BODY_NORM * bsum;
+            out = mix + ksBody * BODY_NORM * bsum;
           }
+          // pick/finger contact-noise transient at the attack (mirrors renderKs)
+          const pluckNoise = Math.min(Math.max(this.v.ks?.pluckNoise ?? 0, 0), 1);
+          if (pluckNoise > 0 && this.k < Math.floor(0.006 * SR)) out += (Math.random() * 2 - 1) * pluckNoise * Math.exp(-this.k / (0.0015 * SR));
           scratch[i] = out * amp * this.env(this.k);
           this.k++;
         }
