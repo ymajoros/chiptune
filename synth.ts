@@ -581,7 +581,18 @@ export function seedString(L: number, pick: number, tone: number): Float32Array 
   const seed = new Float32Array(L);
   for (let i = 0; i < L; i++) seed[i] = Math.random() * 2 - 1;
   const a = 1 - Math.min(Math.max(tone, 0), 1); // tone 1 -> a 0 (bright/raw)
-  if (a > 0) { let lp = 0; for (let i = 0; i < L; i++) { lp = seed[i] + a * (lp - seed[i]); seed[i] = lp; } }
+  if (a > 0) {
+    let lp = 0;
+    for (let i = 0; i < L; i++) { lp = seed[i] + a * (lp - seed[i]); seed[i] = lp; }
+    // The low-pass removes energy, so a softer/darker pick was audibly QUIETER.
+    // Rescale to the raw white-noise RMS so `tone` changes timbre, not loudness.
+    let ss = 0;
+    for (let i = 0; i < L; i++) ss += seed[i] * seed[i];
+    const rms = Math.sqrt(ss / L);
+    if (rms > 1e-6) { const g = 0.5774 / rms; for (let i = 0; i < L; i++) seed[i] *= g; }
+  }
+  // Pick-position comb (applied AFTER the energy normalization): plucking near the
+  // bridge legitimately thins/quietens the tone, so this is left to affect level.
   const pd = Math.round(Math.min(Math.max(pick, 0), 0.5) * L);
   if (pd > 0 && pd < L) { const cp = seed.slice(); for (let i = 0; i < L; i++) seed[i] = cp[i] - (i >= pd ? cp[i - pd] : 0); }
   return seed;
