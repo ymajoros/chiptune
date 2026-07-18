@@ -324,39 +324,52 @@ const CH_COLORS = [
   "#f72585", "#ff6b6b", "#ff924c", "#ffca3a", "#8ac926", "#52b788",
   "#118ab2", "#06d6a0", "#c9ada7", "#e5989b",
 ];
-let playheadX = 0;
+let playheadT = 0; // seconds — the transport position the playhead marks
 function drawRoll(): void {
   const c = els.roll;
   const g = c.getContext("2d")!;
-  const W = (c.width = c.clientWidth * devicePixelRatio);
+  // clientWidth can be 0 if we draw before layout (initial load) — fall back so
+  // the roll is never a zero-width (invisible) canvas.
+  const cw = c.clientWidth || c.parentElement?.clientWidth || 800;
+  const W = (c.width = cw * devicePixelRatio);
   const H = (c.height = 220 * devicePixelRatio);
   g.clearRect(0, 0, W, H);
   g.fillStyle = "rgba(255,255,255,0.03)";
   g.fillRect(0, 0, W, H);
   const dur = song.duration;
   const pitched = song.notes.filter((n) => n.channel !== 9);
-  if (pitched.length === 0 || dur <= 0) return;
-  let lo = 127, hi = 0;
-  for (const n of pitched) { if (n.pitch < lo) lo = n.pitch; if (n.pitch > hi) hi = n.pitch; }
-  const range = Math.max(hi - lo, 1);
-  const pad = 6 * devicePixelRatio;
-  const solo = [...mixer.values()].some((m) => m.solo);
-  for (const n of pitched) {
-    const m = mixer.get(`${n.track}:${n.channel}`);
-    const silent = m && (solo ? !m.solo : m.mute);
-    const x = (n.start / dur) * W;
-    const w = Math.max((n.dur / dur) * W, 1.5 * devicePixelRatio);
-    const y = pad + (1 - (n.pitch - lo) / range) * (H - 2 * pad);
-    const h = Math.max((H - 2 * pad) / (range + 1), 2 * devicePixelRatio);
-    g.fillStyle = CH_COLORS[n.channel % 16];
-    g.globalAlpha = silent ? 0.18 : 0.85;
-    g.fillRect(x, y, w, h);
+  if (pitched.length && dur > 0) {
+    let lo = 127, hi = 0;
+    for (const n of pitched) { if (n.pitch < lo) lo = n.pitch; if (n.pitch > hi) hi = n.pitch; }
+    const range = Math.max(hi - lo, 1);
+    const pad = 6 * devicePixelRatio;
+    const solo = [...mixer.values()].some((m) => m.solo);
+    for (const n of pitched) {
+      const m = mixer.get(`${n.track}:${n.channel}`);
+      const silent = m && (solo ? !m.solo : m.mute);
+      const x = (n.start / dur) * W;
+      const w = Math.max((n.dur / dur) * W, 1.5 * devicePixelRatio);
+      const y = pad + (1 - (n.pitch - lo) / range) * (H - 2 * pad);
+      const h = Math.max((H - 2 * pad) / (range + 1), 2 * devicePixelRatio);
+      g.fillStyle = CH_COLORS[n.channel % 16];
+      g.globalAlpha = silent ? 0.18 : 0.85;
+      g.fillRect(x, y, w, h);
+    }
+    g.globalAlpha = 1;
+    // transport playhead — always drawn (paused too), not just while playing
+    const px = (playheadT / dur) * W;
+    g.strokeStyle = "#fff";
+    g.lineWidth = 1.5 * devicePixelRatio;
+    g.beginPath();
+    g.moveTo(px, 0);
+    g.lineTo(px, H);
+    g.stroke();
   }
-  g.globalAlpha = 1;
 }
+/** Move the playhead to `t` seconds and redraw. */
 function drawPlayhead(t: number): void {
-  if (song.duration <= 0) return;
-  playheadX = (t / song.duration) * els.roll.width;
+  playheadT = t;
+  drawRoll();
 }
 function frame(): void {
   if (running) {
@@ -364,17 +377,13 @@ function frame(): void {
     if (currentTime() >= song.duration - 0.02 && synth && synth.playheadSeconds >= song.duration + 0.4) {
       stopPlayback();
     }
-    drawRoll();
-    const g = els.roll.getContext("2d")!;
-    g.strokeStyle = "#fff";
-    g.lineWidth = 1.5 * devicePixelRatio;
-    g.beginPath();
-    g.moveTo(playheadX, 0);
-    g.lineTo(playheadX, els.roll.height);
-    g.stroke();
+    drawPlayhead(currentTime());
   }
   requestAnimationFrame(frame);
 }
+// redraw on resize, and once after first layout (initial canvas width may be 0)
+addEventListener("resize", () => drawRoll());
+requestAnimationFrame(() => drawPlayhead(offset));
 
 // ---- mixer / instrument editor table ----
 function buildEditor(): void {
