@@ -138,6 +138,20 @@ export interface SympatheticVoice {
   mix: number; // wet level added to the instrument's dry signal
 }
 
+/**
+ * Guitar amp + speaker-cabinet voicing — what makes a string read as a clean
+ * *electric* guitar (vs. an acoustic pluck). A pickup/string is dry; the amp adds
+ * a little tube soft-clip, a midrange presence bump, and — crucially — a speaker
+ * cabinet's sharp high roll-off (a real cab dies above ~5 kHz). This is the stage
+ * FL Slayer stacks on its string model that a bare Karplus-Strong lacks.
+ */
+export interface AmpConfig {
+  drive: number; // 1 = clean; >1 = tube-ish soft-clip warmth
+  presence: number; // 0..1 midrange presence bump (~2.2 kHz)
+  cabLow: number; // cabinet low-pass cutoff Hz (~3500-5500) — the "speaker" sound
+  level: number; // output makeup gain
+}
+
 export interface RenderOptions {
   attack: number; // seconds
   release: number; // seconds
@@ -177,6 +191,7 @@ export interface VoiceOverride {
   ks?: KsConfig;
   formant?: FormantConfig;
   sympathetic?: SympatheticVoice; // the instrument's own strings ringing in sympathy
+  amp?: AmpConfig; // guitar amp + cabinet voicing (electric-guitar colour)
 }
 
 // Vowel formant table: [F1,F2,F3] Hz, matching gains, and bandwidths Hz.
@@ -554,6 +569,7 @@ export interface Voice {
   ks?: KsConfig;
   formant?: FormantConfig;
   sympathetic?: SympatheticVoice; // the instrument's own strings ringing in sympathy
+  amp?: AmpConfig; // guitar amp + cabinet voicing (electric-guitar colour)
 }
 
 /** Synthesize one note's tone (n samples) with a given voice. */
@@ -675,7 +691,7 @@ export function gmVoiceFor(song: Song, overrides?: Record<string, VoiceOverride>
         // swaps the engine (e.g. sets `fm`) must clear the others.
         const engineKeys: (keyof VoiceOverride)[] = ["harmonics", "fm", "sub", "ks", "formant"];
         if (engineKeys.some((k) => ov[k] !== undefined)) {
-          v = { attack: v.attack, release: v.release, gain: v.gain, foldAbove: v.foldAbove, sympathetic: v.sympathetic };
+          v = { attack: v.attack, release: v.release, gain: v.gain, foldAbove: v.foldAbove, sympathetic: v.sympathetic, amp: v.amp };
         }
         v = { ...v, ...ov };
       }
