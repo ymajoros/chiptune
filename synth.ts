@@ -425,6 +425,24 @@ function bandpass(f: number, q: number): Biquad {
   };
 }
 
+// A guitar body's resonant modes (Hz, Q, relative gain): the Helmholtz air
+// resonance, the main top-plate mode, and a spread of higher body/plate modes.
+// Summed as a resonator bank this is a modal body — the same set of resonances a
+// measured body impulse response is built from — far richer than two band-passes.
+export const BODY_MODES: { f: number; q: number; g: number }[] = [
+  { f: 100, q: 6, g: 1.0 },
+  { f: 200, q: 7, g: 0.8 },
+  { f: 280, q: 8, g: 0.5 },
+  { f: 400, q: 8, g: 0.45 },
+  { f: 540, q: 9, g: 0.35 },
+  { f: 700, q: 10, g: 0.3 },
+  { f: 900, q: 10, g: 0.25 },
+  { f: 1200, q: 11, g: 0.2 },
+  { f: 1700, q: 12, g: 0.15 },
+  { f: 2400, q: 12, g: 0.12 },
+];
+export const BODY_NORM = 0.5; // keeps the summed bank in the same level range as the old 2-band body
+
 /**
  * Phase delay (in samples) of a first-order all-pass H(z) = (a + z⁻¹)/(1 + a z⁻¹)
  * at angular frequency w. Used to compensate the delay-line length so adding the
@@ -494,8 +512,9 @@ function renderKs(tone: Float32Array, ks: KsConfig, freq: number, amp: number): 
   const { Li, C, disp, b, decay } = ksStringSetup(freq, ks);
   const line = seedString(Li, ks.pick ?? 0, ks.tone ?? 1);
   const body = ks.body ?? 0;
-  const c1 = bandpass(110, 2.5), c2 = bandpass(230, 3);
-  let x1a = 0, x2a = 0, y1a = 0, y2a = 0, x1b = 0, x2b = 0, y1b = 0, y2b = 0;
+  // modal body: one band-pass per body mode, summed (a resonator-bank "body IR")
+  const bodyC = body > 0 ? BODY_MODES.map((m) => ({ ...bandpass(m.f, m.q), g: m.g })) : [];
+  const bst = new Float64Array(bodyC.length * 4); // [x1,x2,y1,y2] per mode
   let dX1 = 0, dY1 = 0, tX1 = 0, tY1 = 0, dampPrev = 0, idx = 0;
   for (let k = 0; k < n; k++) {
     const cur = line[idx]; // string output = the delayed sample
@@ -509,11 +528,14 @@ function renderKs(tone: Float32Array, ks: KsConfig, freq: number, amp: number): 
     idx = idx + 1 === Li ? 0 : idx + 1;
     let out = cur;
     if (body > 0) {
-      const ya = c1.b0 * cur + c1.b1 * x1a + c1.b2 * x2a - c1.a1 * y1a - c1.a2 * y2a;
-      x2a = x1a; x1a = cur; y2a = y1a; y1a = ya;
-      const yb = c2.b0 * cur + c2.b1 * x1b + c2.b2 * x2b - c2.a1 * y1b - c2.a2 * y2b;
-      x2b = x1b; x1b = cur; y2b = y1b; y1b = yb;
-      out = cur + body * (ya + yb);
+      let bsum = 0;
+      for (let m = 0; m < bodyC.length; m++) {
+        const c = bodyC[m], o = m * 4;
+        const y = c.b0 * cur + c.b1 * bst[o] + c.b2 * bst[o + 1] - c.a1 * bst[o + 2] - c.a2 * bst[o + 3];
+        bst[o + 1] = bst[o]; bst[o] = cur; bst[o + 3] = bst[o + 2]; bst[o + 2] = y;
+        bsum += c.g * y;
+      }
+      out = cur + body * BODY_NORM * bsum;
     }
     tone[k] = out * amp;
   }

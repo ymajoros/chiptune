@@ -36,6 +36,8 @@ import {
   gmVoiceFor,
   ksStringSetup,
   seedString,
+  BODY_MODES,
+  BODY_NORM,
 } from "../synth.ts";
 import { renderDrum } from "../drums.ts";
 
@@ -145,8 +147,8 @@ class PitchedVoice implements RtVoice {
   private line!: Float32Array; private idx = 0; private ksB = 0; // KS
   private ksC = 0; private ksDisp = 0; private ksDecay = 1; // tuning/dispersion/decay coeffs
   private dX1 = 0; private dY1 = 0; private tX1 = 0; private tY1 = 0; private dampPrev = 0; // KS loop filter state
-  private ksc1?: Biquad; private ksc2?: Biquad; // KS body resonators
-  private kb = [0, 0, 0, 0, 0, 0, 0, 0]; // body biquad state [x1a,x2a,y1a,y2a,x1b,x2b,y1b,y2b]
+  private bodyC?: (Biquad & { g: number })[]; // modal body resonator bank
+  private bodyState?: Float64Array; // [x1,x2,y1,y2] per body mode
 
   constructor(note: Note, v: Voice, vib: Vibrato | undefined, chanKey: string, firstOffset: number) {
     this.chanKey = chanKey;
@@ -168,7 +170,7 @@ class PitchedVoice implements RtVoice {
       const setup = ksStringSetup(freq, v.ks);
       this.line = seedString(setup.Li, v.ks.pick ?? 0, v.ks.tone ?? 1);
       this.ksB = setup.b; this.ksC = setup.C; this.ksDisp = setup.disp; this.ksDecay = setup.decay;
-      if ((v.ks.body ?? 0) > 0) { this.ksc1 = bandpass(110, 2.5); this.ksc2 = bandpass(230, 3); }
+      if ((v.ks.body ?? 0) > 0) { this.bodyC = BODY_MODES.map((m) => ({ ...bandpass(m.f, m.q), g: m.g })); this.bodyState = new Float64Array(this.bodyC.length * 4); }
     } else if (v.formant) {
       this.engine = "formant";
       this.initUnison(v.formant.voices, v.formant.detune, freq);
@@ -357,13 +359,16 @@ class PitchedVoice implements RtVoice {
           this.line[this.idx] = fb;
           this.idx = this.idx + 1 === L ? 0 : this.idx + 1;
           let out = cur;
-          if (this.ksc1) { // body resonance (guitar air/wood modes)
-            const kb = this.kb, c1 = this.ksc1, c2 = this.ksc2!;
-            const ya = c1.b0 * cur + c1.b1 * kb[0] + c1.b2 * kb[1] - c1.a1 * kb[2] - c1.a2 * kb[3];
-            kb[1] = kb[0]; kb[0] = cur; kb[3] = kb[2]; kb[2] = ya;
-            const yb = c2.b0 * cur + c2.b1 * kb[4] + c2.b2 * kb[5] - c2.a1 * kb[6] - c2.a2 * kb[7];
-            kb[5] = kb[4]; kb[4] = cur; kb[7] = kb[6]; kb[6] = yb;
-            out = cur + ksBody * (ya + yb);
+          if (this.bodyC) { // modal body resonator bank (mirrors renderKs)
+            const bc = this.bodyC, bs = this.bodyState!;
+            let bsum = 0;
+            for (let m = 0; m < bc.length; m++) {
+              const c = bc[m], o = m * 4;
+              const y = c.b0 * cur + c.b1 * bs[o] + c.b2 * bs[o + 1] - c.a1 * bs[o + 2] - c.a2 * bs[o + 3];
+              bs[o + 1] = bs[o]; bs[o] = cur; bs[o + 3] = bs[o + 2]; bs[o + 2] = y;
+              bsum += c.g * y;
+            }
+            out = cur + ksBody * BODY_NORM * bsum;
           }
           scratch[i] = out * amp * this.env(this.k);
           this.k++;
