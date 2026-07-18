@@ -111,8 +111,8 @@ const OVERRIDE: Record<number, Voice> = {
   // re-voiced for the fixed (now monotonic) damping. Measured HF-energy ratio
   // spreads them clearly: nylon 0.45 (warmest/woodiest) < clean 0.67 < steel 0.70
   // (brightest/ringiest); jazz is the dark mellow archtop, muted the short palm-mute.
-  24: { attack: 0.009, release: 0.14, gain: 0.95, ks: ks(0.9935, 0.85, 0.55, 0.03, 0.36, 0.26), sympathetic: symp(GTR_STRINGS, 0.5, 0.4, 0.14) }, // Nylon Guitar — warm, woody, most acoustic (dark, soft finger pluck, short decay)
-  25: { attack: 0.006, release: 0.2, gain: 0.88, ks: ks(0.9978, 0.24, 0.2, 0.13, 0.13, 0.8), sympathetic: symp(GTR_STRINGS, 0.62, 0.3, 0.22) }, // Steel Guitar — bright, metallic, long ringing (low damping, hard pick near bridge, stiff)
+  24: { attack: 0.022, release: 0.16, gain: 0.95, ks: ks(0.994, 0.92, 0.62, 0.03, 0.44, 0.2), sympathetic: symp(GTR_STRINGS, 0.5, 0.42, 0.14) }, // Nylon Guitar — soft warm nylon: slow finger pluck, warm+bodied, mid-string
+  25: { attack: 0.016, release: 0.18, gain: 0.9, ks: ks(0.9975, 0.3, 0.24, 0.12, 0.42, 0.62), sympathetic: symp(GTR_STRINGS, 0.55, 0.32, 0.2) }, // Steel Guitar — bright but less cutting: mid-string pluck, warmer
   26: { attack: 0.012, release: 0.16, gain: 0.9, ks: ks(0.9965, 0.62, 0.3, 0.05, 0.3, 0.42), amp: cab(1.15, 0.25, 3600, 1.05) }, // Jazz Guitar — mellow hollow-body archtop through a warm, dark cab (was falling through to the generic guitar, identical to Muted)
   27: { attack: 0.022, release: 0.16, gain: 0.9, ks: ks(0.996, 0.5, 0.1, 0.02, 0.26, 0.5), sympathetic: symp(GTR_STRINGS, 0.55, 0.35, 0.18), amp: cab(1.4, 0.7, 4500, 1.15) }, // Clean Guitar — electric (bright presence-boosted cab), in-between nylon and steel
   28: { attack: 0.004, release: 0.06, gain: 0.9, ks: ks(0.972, 0.9, 0.08, 0.02, 0.2, 0.34, { releaseDamp: 0.4 }) }, // Muted Guitar — palm-muted: very short/choked decay, dark (was falling through to the generic guitar, identical to Jazz)
