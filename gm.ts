@@ -84,6 +84,12 @@ const OVERRIDE: Record<number, Voice> = {
   53: { attack: 0.08, release: 0.2, gain: 0.7, formant: { vowel: "o", voices: 4, detune: 14 } }, // Voice Oohs
   71: { attack: 0.03, release: 0.08, gain: 0.75, harmonics: [{ multiple: 3, amp: 0.4 }, { multiple: 5, amp: 0.2 }, { multiple: 7, amp: 0.1 }] }, // Clarinet — odd harmonics
   73: { attack: 0.05, release: 0.08, gain: 0.65, harmonics: [{ multiple: 2, amp: 0.05 }] }, // Flute — nearly pure
+  // Atmosphere (FX 4) — a soft, dark, slowly-evolving PAD, not the metallic FM
+  // that read as a sitar. Wide detuned saws through a low cutoff, slow attack.
+  99: { attack: 0.35, release: 0.6, gain: 0.6, sub: sub("saw", 700, 0.12, 500, 2.0, 22, 5) },
+  // Clean Guitar — warmer, less "synthy": a Karplus string with more damping
+  // (darker, less metallic) and a touch more sustain than the bright default.
+  27: { attack: 0.004, release: 0.12, gain: 0.9, ks: ks(0.9955, 0.62) },
   80: { attack: 0.005, release: 0.06, gain: 0.8, sub: sub("square", 2200, 0.3, 1400, 0.3, 4, 2) }, // Square Lead
 };
 
