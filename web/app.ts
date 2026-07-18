@@ -845,6 +845,28 @@ function openSong(newSong: Song, name: string, preset?: SongConfig): void {
   renderInstrumentEditor();
   drawRoll();
   updateSeek();
+  saveLastSession();
+}
+
+// Remember the last-opened song so a refresh reopens it instead of the bundled
+// demo. Only the song + name are stored; per-song voice/mixer config is keyed by
+// song id and reloaded by openSong's loadConfig(). Local-only (localStorage).
+const LAST_SESSION_KEY = "chiptune:lastSession";
+function saveLastSession(): void {
+  try {
+    localStorage.setItem(LAST_SESSION_KEY, JSON.stringify({ song, songName }));
+  } catch {}
+}
+function loadLastSession(): { song: Song; songName: string } | null {
+  try {
+    const raw = localStorage.getItem(LAST_SESSION_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw) as { song?: Song; songName?: string };
+    if (!s.song || !Array.isArray(s.song.notes) || typeof s.song.duration !== "number") return null;
+    return { song: s.song, songName: s.songName || "restored song" };
+  } catch {
+    return null;
+  }
 }
 
 function resetToDefaults(): void {
@@ -1008,5 +1030,7 @@ els.reverbMixVal.textContent = Number(els.reverbMix.value).toFixed(2);
 els.delayMixVal.textContent = Number(els.delayMix.value).toFixed(2);
 buildPiano();
 initMidi();
-openSong(bundledSong, songName);
+const restored = loadLastSession();
+if (restored) openSong(restored.song, restored.songName);
+else openSong(bundledSong, songName);
 requestAnimationFrame(frame);
