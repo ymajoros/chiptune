@@ -208,6 +208,25 @@ function saveConfig(): void {
   } catch { /* storage full / disabled — ignore */ }
 }
 
+/** Coerce a persisted config's numeric fields back to numbers (a stray string
+ *  from an older build or a hand-edited .chip must never reach `.toFixed`). */
+function sanitizeConfig(cfg: SongConfig): SongConfig {
+  const numFields = ["gain", "attack", "release", "foldAbove"] as const;
+  for (const o of Object.values(cfg.voiceOverrides ?? {})) {
+    for (const f of numFields) {
+      const rec = o as Record<string, unknown>;
+      if (rec[f] !== undefined) { const n = Number(rec[f]); if (Number.isFinite(n)) rec[f] = n; else delete rec[f]; }
+    }
+  }
+  for (const m of Object.values(cfg.mixer ?? {})) {
+    const rec = m as Record<string, unknown>;
+    for (const f of ["volume", "reverbSend", "delaySend"]) {
+      const n = Number(rec[f]); if (Number.isFinite(n)) rec[f] = n; else delete rec[f];
+    }
+  }
+  return cfg;
+}
+
 function loadConfig(): boolean {
   for (const k of Object.keys(voiceOverrides)) delete voiceOverrides[k];
   mixer.clear();
@@ -215,7 +234,7 @@ function loadConfig(): boolean {
   try {
     const raw = localStorage.getItem(cfgKey(songId));
     if (raw) {
-      const cfg = JSON.parse(raw) as SongConfig;
+      const cfg = sanitizeConfig(JSON.parse(raw) as SongConfig);
       Object.assign(voiceOverrides, cfg.voiceOverrides ?? {});
       for (const [k, v] of Object.entries(cfg.mixer ?? {})) mixer.set(k, { ...defaultChannelMix(), ...v });
       loaded = true;
@@ -396,7 +415,8 @@ function buildEditor(): void {
     const m = mixer.get(c.key)!;
     const ov = voiceOverrides[c.key];
     const prog = ov?.program ?? c.program;
-    const gain = ov?.gain ?? 1;
+    const gRaw = Number(ov?.gain ?? 1);
+    const gain = Number.isFinite(gRaw) ? gRaw : 1; // never let a bad value crash .toFixed
     const inst = c.isDrum
       ? `<span class="filelabel">Drum kit</span>`
       : `<select data-k="${c.key}" data-f="program">${gmOptions}</select>`;
@@ -759,6 +779,7 @@ function openSong(newSong: Song, name: string, preset?: SongConfig): void {
   offset = 0;
   let had: boolean;
   if (preset) {
+    sanitizeConfig(preset);
     for (const k of Object.keys(voiceOverrides)) delete voiceOverrides[k];
     mixer.clear();
     Object.assign(voiceOverrides, preset.voiceOverrides ?? {});
