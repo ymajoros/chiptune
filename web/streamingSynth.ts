@@ -434,15 +434,25 @@ class DrumVoice implements RtVoice {
 }
 
 // ---- streaming reverb (wet only; state kept across blocks) ----
+// Freeverb-style: 8 damped comb filters in parallel -> 4 allpasses in series.
+// Bigger/longer than a bare Schroeder — the combs are lengthened for a larger
+// space, feedback reaches ~0.98 for a long tail, and each comb has a low-pass in
+// its loop so the tail stays smooth/natural instead of metallic.
 class StreamReverb {
-  private combs: { buf: Float32Array; i: number }[];
+  private combs: { buf: Float32Array; i: number; store: number }[];
   private aps: { buf: Float32Array; i: number }[];
-  private fb: number;
+  private readonly fb: number; // room size (comb feedback)
+  private readonly damp1: number; // hf damping in the comb loop
+  private readonly damp2: number;
   constructor(room: number, seed = 0) {
-    const combLens = [1557, 1617, 1491, 1422].map((L) => L + seed);
-    this.combs = combLens.map((L) => ({ buf: new Float32Array(L), i: 0 }));
-    this.aps = [225, 556].map((L) => ({ buf: new Float32Array(L), i: 0 }));
-    this.fb = 0.7 + 0.28 * Math.min(Math.max(room, 0), 1);
+    const r = Math.min(Math.max(room, 0), 1);
+    // Freeverb comb tunings, scaled ~1.5x for a bigger room; stereo decorrelated by seed
+    const combLens = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617].map((L) => Math.round(L * 1.5) + seed);
+    this.combs = combLens.map((L) => ({ buf: new Float32Array(L), i: 0, store: 0 }));
+    this.aps = [556, 441, 341, 225].map((L) => ({ buf: new Float32Array(L + seed), i: 0 }));
+    this.fb = 0.82 + 0.16 * r; // up to ~0.98 -> long tail
+    this.damp1 = 0.2; // gentle high-frequency damping
+    this.damp2 = 1 - this.damp1;
   }
   process(input: Float32Array, out: Float32Array): void {
     for (let k = 0; k < input.length; k++) {
@@ -450,11 +460,12 @@ class StreamReverb {
       let wet = 0;
       for (const c of this.combs) {
         const y = c.buf[c.i];
-        c.buf[c.i] = dry + y * this.fb;
+        c.store = y * this.damp2 + c.store * this.damp1; // low-pass in the feedback
+        c.buf[c.i] = dry + c.store * this.fb;
         c.i = c.i + 1 === c.buf.length ? 0 : c.i + 1;
         wet += y;
       }
-      wet *= 0.25;
+      wet *= 0.15; // 8 combs summed
       for (const a of this.aps) {
         const bufd = a.buf[a.i];
         const y = -wet + bufd;

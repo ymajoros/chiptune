@@ -151,7 +151,7 @@ function buildOptions(): RenderOptions {
     formant: preset.timbre.formant,
     gm,
     drums: els.drums.checked,
-    reverb: els.reverb.checked ? { room: 0.7, mix: Number(els.reverbMix.value) } : undefined,
+    reverb: els.reverb.checked ? { room: 0.82, mix: Number(els.reverbMix.value) } : undefined,
     delay: els.delay.checked ? { time: 0.32, feedback: 0.4, mix: Number(els.delayMix.value) } : undefined,
     compress: els.compress.checked ? { threshold: -18, ratio: 3, attack: 0.005, release: 0.12 } : undefined,
     voiceOverrides,
