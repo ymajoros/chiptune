@@ -87,11 +87,12 @@ const OVERRIDE: Record<number, Voice> = {
   // Atmosphere (FX 4) — a soft, dark, slowly-evolving PAD, not the metallic FM
   // that read as a sitar. Wide detuned saws through a low cutoff, slow attack.
   99: { attack: 0.08, release: 0.6, gain: 1.7, sub: sub("saw", 700, 0.12, 500, 2.0, 22, 5) },
-  // Steel Guitar — steel strings ring longer and brighter than the default
-  // pluck; a soft attack rounds off the abrupt KS onset that read as mechanical.
-  24: { attack: 0.004, release: 0.14, gain: 0.9, ks: ks(0.995, 0.5, 0.35, 0.12, 0.2, 0.5) }, // Nylon Guitar — soft finger pluck, bodied
-  25: { attack: 0.01, release: 0.18, gain: 0.85, ks: ks(0.997, 0.56, 0.32, 0.16, 0.15, 0.62) },
-  27: { attack: 0.006, release: 0.16, gain: 0.9, ks: ks(0.9975, 0.34, 0.12, 0.14, 0.12, 0.88) }, // Clean Guitar — bright resonant string (clean electric)
+  // Guitar family on the resonant-string model, deliberately differentiated:
+  // nylon = warmest/most body, steel = brighter/metallic, clean = electric, in
+  // between. Voiced by ear against a real recording of the arrangement.
+  24: { attack: 0.008, release: 0.14, gain: 0.95, ks: ks(0.995, 0.66, 0.52, 0.04, 0.34, 0.3) }, // Nylon Guitar — warm, woody, most acoustic
+  25: { attack: 0.008, release: 0.18, gain: 0.88, ks: ks(0.997, 0.5, 0.28, 0.07, 0.18, 0.5) }, // Steel Guitar — metallic but warm/realistic
+  27: { attack: 0.022, release: 0.16, gain: 0.9, ks: ks(0.996, 0.54, 0.1, 0.02, 0.26, 0.4) }, // Clean Guitar — electric, in-between nylon and steel
   80: { attack: 0.005, release: 0.06, gain: 0.8, sub: sub("square", 2200, 0.3, 1400, 0.3, 4, 2) }, // Square Lead
 };
 
