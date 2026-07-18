@@ -285,6 +285,9 @@ class PitchedVoice implements RtVoice {
           this.low += f * this.band;
           const high = s - this.low - q1 * this.band;
           this.band += f * high;
+          // a hot (distorted) signal at high cutoff+resonance can ring the SVF up
+          // to Inf; reset it so the voice recovers instead of going NaN forever
+          if (!Number.isFinite(this.low) || !Number.isFinite(this.band)) { this.low = 0; this.band = 0; }
           scratch[i] = this.low * amp * this.env(this.k);
           this.k++;
         }
@@ -677,9 +680,24 @@ export class StreamingSynth {
     for (let i = 0; i < N; i++) { L[i] *= MASTER_GAIN; R[i] *= MASTER_GAIN; }
     if (this.comp) this.comp.processStereo(L, R);
     this.limiter.processStereo(L, R);
+    let bad = false;
     for (let i = 0; i < N; i++) {
+      if (!Number.isFinite(L[i]) || !Number.isFinite(R[i])) { bad = true; break; }
       if (L[i] > 1) L[i] = 1; else if (L[i] < -1) L[i] = -1;
       if (R[i] > 1) R[i] = 1; else if (R[i] < -1) R[i] = -1;
+    }
+    // Self-heal: if any stateful node blew up to NaN/Inf (a hot signal ringing a
+    // resonant filter), the poison would persist forever and silence the engine
+    // even after the gain is lowered. Reset every stateful FX and drop the stuck
+    // voices — the engine recovers within one block instead of dying.
+    if (bad) {
+      L.fill(0); R.fill(0);
+      this.active = this.active.filter((v) => !(v instanceof PitchedVoice)); // drop pitched voices; drums are one-shots
+      this.comp = this.opts.compress ? new Compressor(this.opts.compress) : undefined;
+      this.limiter = new Compressor(LIMITER);
+      this.revL = this.opts.reverb ? new StreamReverb(this.opts.reverb.room, 0) : undefined;
+      this.revR = this.opts.reverb ? new StreamReverb(this.opts.reverb.room, 7) : undefined;
+      this.ping = this.opts.delay ? new StreamPingPong(this.opts.delay) : undefined;
     }
 
     this.pos += N;
