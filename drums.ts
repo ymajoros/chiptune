@@ -132,21 +132,23 @@ export function renderDrum(note: number, velocity: number): Float32Array {
       break;
     case 38: // Acoustic Snare
     case 40: {
-      // Snare = a tuned body (two decaying tones) + the wire "crack": noise
-      // band-passed around 3kHz (not just high-passed), which gives the sharp
-      // snap instead of a wash.
-      const n = secs(0.18);
-      const body = thump(n, 330, 185, 0.04, 0.1, 0);
-      const bp = makeBP(3200, 0.7);
-      const hp = makeHP(0.3);
+      // Snare = a tuned head "thock" + a wire buzz. Real snares are SHORT and
+      // snappy, not a long wash: keep the noise tail brief (fast decay), narrow
+      // the wire band so it cracks rather than hisses, and add a sharp stick
+      // transient at the very start so it reads as a hit.
+      const n = secs(0.13);
+      const body = thump(n, 340, 190, 0.03, 0.055, 0);
+      const bp = makeBP(2400, 1.4);
+      const hp = makeHP(0.4);
+      const snapN = secs(0.006);
       buf = new Float32Array(n);
       for (let k = 0; k < n; k++) {
         const t = k / SR;
-        const crack = bp(rnd()) * Math.exp(-t / 0.09);
-        const air = hp(rnd()) * Math.exp(-t / 0.05); // top-end sizzle
-        buf[k] = 0.35 * body[k] + 0.9 * crack + 0.25 * air;
+        const wire = bp(rnd()) * Math.exp(-t / 0.036); // fast-decaying buzz
+        const snap = k < snapN ? hp(rnd()) * (1 - k / snapN) : 0; // stick attack
+        buf[k] = 0.5 * body[k] + 0.75 * wire + 0.45 * snap;
       }
-      gain = 1.05;
+      gain = 1.0;
       break;
     }
     case 39: {
