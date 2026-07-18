@@ -66,7 +66,7 @@ const FAMILY: Voice[] = [
 
 /** Per-program overrides where the family default misses badly. */
 const OVERRIDE: Record<number, Voice> = {
-  0: { attack: 0.004, release: 0.08, gain: 0.95, fm: fm(1, 8, 0.35, 0) }, // Acoustic Grand — brighter, faster decay
+  0: { attack: 0.002, release: 0.2, gain: 0.95, ks: ks(0.9968, 0.42, 0.3) }, // Acoustic Grand — struck string + soundboard
   16: { attack: 0.012, release: 0.05, gain: 1.0, foldAbove: 81, harmonics: [{ multiple: 2, amp: 0.7 }, { multiple: 3, amp: 0.4 }, { multiple: 4, amp: 0.5 }, { multiple: 6, amp: 0.25 }, { multiple: 8, amp: 0.15 }] }, // Drawbar Organ — full registration
   // Percussive Organ — this arrangement doubles it high (C6-E6); the 6'/8' drawbars
   // there scream past 8kHz and bury the mix, so keep it low and drop the top ranks.
