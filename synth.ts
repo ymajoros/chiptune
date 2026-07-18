@@ -101,6 +101,7 @@ export interface Reverb {
 export interface KsConfig {
   decay: number; // feedback gain 0..1; higher -> longer sustain
   damping: number; // 0..1 low-pass blend; higher -> darker, faster high-freq decay
+  body?: number; // 0..~0.5 body resonance mix — the "wooden box" of an acoustic
 }
 
 /**
@@ -296,7 +297,7 @@ function renderSub(
     // --- distortion: tanh soft-clip BEFORE the filter, like a guitar amp
     // (preamp overdrive -> the filter then acts as the speaker cabinet, taming
     // the harsh top). drive 1 is clean; higher folds the saw into a fuzz. ---
-    if (drive > 1) s = Math.tanh(s * drive) / Math.tanh(drive);
+    if (drive > 1) { const d = s * drive; s = d <= -1 ? -1 : d >= 1 ? 1 : 1.5 * d - 0.5 * d * d * d; } // cubic soft-clip: harder edge than tanh -> audible grit
 
     // --- resonant low-pass with envelope-swept cutoff ---
     let fc = sub.cutoff + sub.envAmount * Math.exp(-k / envDecaySamples);
@@ -413,11 +414,23 @@ function renderKs(tone: Float32Array, ks: KsConfig, freq: number, amp: number): 
   const line = new Float32Array(L);
   for (let i = 0; i < L; i++) line[i] = Math.random() * 2 - 1; // pluck excitation
   const b = Math.min(Math.max(ks.damping, 0), 1); // low-pass blend
+  const body = ks.body ?? 0; // body resonance mix (~guitar air/wood modes)
+  const c1 = bandpass(110, 2.5);
+  const c2 = bandpass(230, 3);
+  let x1a = 0, x2a = 0, y1a = 0, y2a = 0, x1b = 0, x2b = 0, y1b = 0, y2b = 0;
   let idx = 0;
   for (let k = 0; k < n; k++) {
     const cur = line[idx];
     const nxt = line[(idx + 1) % L];
-    tone[k] = cur * amp;
+    let out = cur;
+    if (body > 0) {
+      const ya = c1.b0 * cur + c1.b1 * x1a + c1.b2 * x2a - c1.a1 * y1a - c1.a2 * y2a;
+      x2a = x1a; x1a = cur; y2a = y1a; y1a = ya;
+      const yb = c2.b0 * cur + c2.b1 * x1b + c2.b2 * x2b - c2.a1 * y1b - c2.a2 * y2b;
+      x2b = x1b; x1b = cur; y2b = y1b; y1b = yb;
+      out = cur + body * (ya + yb);
+    }
+    tone[k] = out * amp;
     line[idx] = (cur * (1 - b) + nxt * b) * ks.decay; // low-pass + decay feedback
     idx = idx + 1 === L ? 0 : idx + 1;
   }

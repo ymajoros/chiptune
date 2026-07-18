@@ -717,23 +717,52 @@ function buildPiano(): void {
 function keyEl(pitch: number): HTMLElement | null {
   return els.piano.querySelector(`[data-pitch="${pitch}"]`);
 }
-function audition(pitch: number, velocity = 100): void {
+// Sustaining audition: a note is held for as long as the key/pointer is down.
+const activeNotes = new Map<number, { src: AudioBufferSourceNode; gain: GainNode }>();
+function noteOn(pitch: number, velocity = 100): void {
   ensureCtx();
   if (!ctx) return;
+  if (activeNotes.has(pitch)) noteOff(pitch); // retrigger
   const voice = selectedKey ? resolveVoice(selectedKey).voice : gmVoice(0);
-  const buf = renderAudition(voice, pitch, velocity, 0.7, buildOptions().vibrato);
+  // render a long note; while held we play through its sustain, releasing early
+  // via our own gain ramp (below). Plucked/decaying voices still decay naturally.
+  const buf = renderAudition(voice, pitch, velocity, 8, buildOptions().vibrato);
   const ab = ctx.createBuffer(1, buf.length, ENGINE_SR);
   ab.copyToChannel(buf, 0);
   const src = ctx.createBufferSource();
   src.buffer = ab;
-  src.connect(ctx.destination);
+  const gain = ctx.createGain();
+  src.connect(gain).connect(ctx.destination);
   src.start();
-  const el = keyEl(pitch);
-  if (el) { el.classList.add("down"); setTimeout(() => el.classList.remove("down"), 220); }
+  src.onended = () => { activeNotes.delete(pitch); keyEl(pitch)?.classList.remove("down"); };
+  activeNotes.set(pitch, { src, gain });
+  keyEl(pitch)?.classList.add("down");
 }
+function noteOff(pitch: number): void {
+  const a = activeNotes.get(pitch);
+  if (!a || !ctx) return;
+  activeNotes.delete(pitch);
+  const now = ctx.currentTime;
+  a.gain.gain.setValueAtTime(a.gain.gain.value, now);
+  a.gain.gain.linearRampToValueAtTime(0, now + 0.03); // short release -> no click
+  try { a.src.stop(now + 0.05); } catch { /* already stopped */ }
+  keyEl(pitch)?.classList.remove("down");
+}
+/** One-shot audition (used by live MIDI note-ons and anywhere a hold isn't tracked). */
+function audition(pitch: number, velocity = 100): void {
+  noteOn(pitch, velocity);
+  setTimeout(() => noteOff(pitch), 400);
+}
+let pointerPitch: number | null = null;
 els.piano.addEventListener("pointerdown", (e) => {
   const t = (e.target as HTMLElement).closest(".pkey") as HTMLElement | null;
-  if (t) audition(Number(t.dataset.pitch));
+  if (!t) return;
+  e.preventDefault();
+  pointerPitch = Number(t.dataset.pitch);
+  noteOn(pointerPitch);
+});
+window.addEventListener("pointerup", () => {
+  if (pointerPitch !== null) { noteOff(pointerPitch); pointerPitch = null; }
 });
 
 // computer-keyboard mapping (one octave from middle C)
@@ -755,9 +784,14 @@ window.addEventListener("keydown", (e) => {
   const p = KEYMAP[e.key.toLowerCase()];
   if (p === undefined || held.has(e.key)) return;
   held.add(e.key);
-  audition(p);
+  noteOn(p); // held until keyup
 });
-window.addEventListener("keyup", (e) => held.delete(e.key));
+window.addEventListener("keyup", (e) => {
+  if (held.delete(e.key)) {
+    const p = KEYMAP[e.key.toLowerCase()];
+    if (p !== undefined) noteOff(p);
+  }
+});
 
 // Web MIDI (guarded — many environments lack it)
 function initMidi(): void {

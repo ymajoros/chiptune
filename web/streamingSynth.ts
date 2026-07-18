@@ -133,6 +133,8 @@ class PitchedVoice implements RtVoice {
   private fx1 = [0, 0, 0]; private fx2 = [0, 0, 0]; private fy1 = [0, 0, 0]; private fy2 = [0, 0, 0]; // formant biquads
   private co: Biquad[] = []; private A!: { f: number[]; g: number[]; bw: number[] }; private B!: { f: number[]; g: number[]; bw: number[] }; private morph = false;
   private line!: Float32Array; private idx = 0; private ksB = 0; // KS
+  private ksc1?: Biquad; private ksc2?: Biquad; // KS body resonators
+  private kb = [0, 0, 0, 0, 0, 0, 0, 0]; // body biquad state [x1a,x2a,y1a,y2a,x1b,x2b,y1b,y2b]
 
   constructor(note: Note, v: Voice, vib: Vibrato | undefined, chanKey: string, firstOffset: number) {
     this.chanKey = chanKey;
@@ -155,6 +157,7 @@ class PitchedVoice implements RtVoice {
       this.line = new Float32Array(L);
       for (let i = 0; i < L; i++) this.line[i] = Math.random() * 2 - 1;
       this.ksB = Math.min(Math.max(v.ks.damping, 0), 1);
+      if ((v.ks.body ?? 0) > 0) { this.ksc1 = bandpass(110, 2.5); this.ksc2 = bandpass(230, 3); }
     } else if (v.formant) {
       this.engine = "formant";
       this.initUnison(v.formant.voices, v.formant.detune, freq);
@@ -274,7 +277,7 @@ class PitchedVoice implements RtVoice {
             this.phases[vv] = ph;
           }
           s /= nv;
-          if (drive > 1) s = Math.tanh(s * drive) / Math.tanh(drive); // guitar-amp overdrive, pre-filter
+          if (drive > 1) { const d = s * drive; s = d <= -1 ? -1 : d >= 1 ? 1 : 1.5 * d - 0.5 * d * d * d; } // cubic soft-clip overdrive, pre-filter
           let fc = sub.cutoff + sub.envAmount * Math.exp(-this.k / envDecaySamples);
           if (fc > SR / 6) fc = SR / 6;
           if (fc < 20) fc = 20;
@@ -330,7 +333,16 @@ class PitchedVoice implements RtVoice {
           if (this.k >= this.n) { scratch[i] = 0; continue; }
           const cur = this.line[this.idx];
           const nxt = this.line[(this.idx + 1) % L];
-          scratch[i] = cur * amp * this.env(this.k);
+          let out = cur;
+          if (this.ksc1) { // body resonance (guitar air/wood modes)
+            const kb = this.kb, c1 = this.ksc1, c2 = this.ksc2!, body = ks.body!;
+            const ya = c1.b0 * cur + c1.b1 * kb[0] + c1.b2 * kb[1] - c1.a1 * kb[2] - c1.a2 * kb[3];
+            kb[1] = kb[0]; kb[0] = cur; kb[3] = kb[2]; kb[2] = ya;
+            const yb = c2.b0 * cur + c2.b1 * kb[4] + c2.b2 * kb[5] - c2.a1 * kb[6] - c2.a2 * kb[7];
+            kb[5] = kb[4]; kb[4] = cur; kb[7] = kb[6]; kb[6] = yb;
+            out = cur + body * (ya + yb);
+          }
+          scratch[i] = out * amp * this.env(this.k);
           this.line[this.idx] = (cur * (1 - b) + nxt * b) * ks.decay;
           this.idx = this.idx + 1 === L ? 0 : this.idx + 1;
           this.k++;
