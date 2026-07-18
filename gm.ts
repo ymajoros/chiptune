@@ -82,6 +82,12 @@ const OVERRIDE: Record<number, Voice> = {
   // Finger Bass — matched to the record's measured bass: rounded (h2~0.5, fast
   // harmonic rolloff) and plucked (decays to ~0.2 sustain over ~0.3s).
   33: { attack: 0.006, release: 0.05, gain: 1.5, fm: fm(1, 2.8, 0.25, 0.28) },
+  // Fretless Bass — a bass IS a plucked string, so use Karplus-Strong: it decays
+  // naturally (no drone, unlike the sustaining sub family default). Voiced soft and
+  // round for the fretless "mwah": soft finger pluck (tone 0.4, pick 0.3 mid-string),
+  // moderate damping rolling off the highs into a singing tone, a long low ring
+  // (decay 0.9975), a touch of body, a slightly slower/softer attack than a picked bass.
+  35: { attack: 0.012, release: 0.1, gain: 1.2, ks: ks(0.9975, 0.5, 0.22, 0.05, 0.3, 0.4) },
   38: { attack: 0.004, release: 0.05, gain: 1.15, sub: sub("saw", 700, 0.5, 1400, 0.12, 0, 1) }, // Synth Bass 1
   45: { attack: 0.003, release: 0.08, gain: 0.85, ks: ks(0.99, 0.4, 0.12, 0.16, 0.25, 0.55) }, // Pizzicato Strings — plucked, bodied
   46: { attack: 0.003, release: 0.2, gain: 0.85, ks: ks(0.998, 0.35, 0.2, 0.1, 0.22, 0.62), sympathetic: symp([36, 41, 43, 45, 48, 50, 52, 55, 57, 60, 64, 67], 0.72, 0.25, 0.22) }, // Orchestral Harp — resonant string
