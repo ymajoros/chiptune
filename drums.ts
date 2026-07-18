@@ -98,6 +98,41 @@ function metallic(n: number, f0: number, ampTau: number, hpA: number, noiseMix: 
   return out;
 }
 
+// A crash needs a much DENSER inharmonic field than a hi-hat — a real cymbal
+// rings in dozens of closely-spaced modes at once, which is what gives the
+// shimmering "crash" instead of a "shhh". Sixteen irregular ratios spanning a
+// wide range; each square partial also adds its own overtones, thickening it.
+const CRASH_MODES = [1, 1.41, 1.83, 2.24, 2.68, 3.14, 3.63, 4.18, 4.79, 5.47, 6.22, 7.05, 7.97, 9.02, 10.2, 11.6];
+
+/**
+ * Crash / splash cymbal: a dense inharmonic bloom, mostly tonal metal (low
+ * noise), with a fast bright "strike" layered over a slower shimmering tail so
+ * it swells and rings rather than reading as a flat noise wash.
+ */
+function crashCymbal(n: number, f0: number, ampTau: number, noiseMix: number): Float32Array {
+  const out = new Float32Array(n);
+  const hp = makeHP(0.45);
+  const ph = new Float64Array(CRASH_MODES.length);
+  const inc = CRASH_MODES.map((r) => (f0 * r) / SR);
+  const bloomN = 0.004 * SR; // 4ms swell-in so the attack isn't an instant blast
+  for (let k = 0; k < n; k++) {
+    let s = 0;
+    for (let o = 0; o < CRASH_MODES.length; o++) {
+      s += ph[o] < 0.5 ? 1 : -1;
+      ph[o] += inc[o];
+      if (ph[o] >= 1) ph[o] -= 1;
+    }
+    s /= CRASH_MODES.length;
+    s = (1 - noiseMix) * s + noiseMix * rnd();
+    const t = k / SR;
+    const bloom = k < bloomN ? k / bloomN : 1;
+    // two-rate decay: a bright fast strike over a long shimmer tail
+    const env = 0.55 * Math.exp(-t / ampTau) + 0.45 * Math.exp(-t / (ampTau * 0.3));
+    out[k] = hp(s) * bloom * env;
+  }
+  return out;
+}
+
 const secs = (s: number) => Math.max(1, Math.floor(s * SR));
 
 /**
@@ -173,12 +208,18 @@ export function renderDrum(note: number, velocity: number): Float32Array {
       buf = metallic(secs(0.35), 1150, 0.14, 0.55, 0.35);
       gain = 0.42;
       break;
-    case 49: // Crash 1 — dense metallic wash, long
-    case 52: // Chinese
-    case 55: // Splash
+    case 49: // Crash 1 — dense metallic bloom
     case 57: // Crash 2
-      buf = metallic(secs(1.3), 900, 0.55, 0.4, 0.5);
-      gain = 0.4;
+      buf = crashCymbal(secs(1.4), 480, 0.7, 0.12);
+      gain = 0.85;
+      break;
+    case 52: // Chinese — trashier: brighter, more noise, shorter
+      buf = crashCymbal(secs(0.9), 620, 0.5, 0.22);
+      gain = 0.8;
+      break;
+    case 55: // Splash — small, quick
+      buf = crashCymbal(secs(0.5), 760, 0.3, 0.14);
+      gain = 0.75;
       break;
     case 51: // Ride — metallic ping (bell + shimmer)
     case 53: // Ride Bell
