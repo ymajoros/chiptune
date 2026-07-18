@@ -95,6 +95,12 @@ const OVERRIDE: Record<number, Voice> = {
   53: { attack: 0.08, release: 0.2, gain: 0.7, formant: { vowel: "o", voices: 4, detune: 14 } }, // Voice Oohs
   71: { attack: 0.03, release: 0.08, gain: 0.75, harmonics: [{ multiple: 3, amp: 0.4 }, { multiple: 5, amp: 0.2 }, { multiple: 7, amp: 0.1 }] }, // Clarinet — odd harmonics
   73: { attack: 0.05, release: 0.08, gain: 0.65, harmonics: [{ multiple: 2, amp: 0.05 }] }, // Flute — nearly pure
+  // Rain (FX 1) — an airy, detuned shimmer WASH, not the metallic inharmonic FM the
+  // synth-effects family default gave (which read as weird and near-inaudible). High
+  // cutoff + wide-detuned saws for a light-rain/wind-chime shimmer; a moderate attack
+  // so the short high notes still speak (the Venus arrangement plays it as a prominent
+  // B4-F#5 melodic line, 0.1-0.46s notes), and a long-ish release for an ambient tail.
+  96: { attack: 0.03, release: 0.55, gain: 1.35, sub: sub("saw", 4500, 0.18, 1600, 0.45, 21, 6) }, // Rain — airy detuned shimmer wash
   // Atmosphere (FX 4) — a soft, dark, slowly-evolving PAD, not the metallic FM
   // that read as a sitar. Wide detuned saws through a low cutoff, slow attack.
   99: { attack: 0.08, release: 0.6, gain: 1.7, sub: sub("saw", 700, 0.12, 500, 2.0, 22, 5) },
