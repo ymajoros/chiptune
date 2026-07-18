@@ -595,6 +595,7 @@ export class Compressor {
 
   /** One sample: apply the current gain to `sample`, driven by detector level `x`. */
   private step(sample: number, x: number): number {
+    if (!Number.isFinite(x)) x = 0; // an Inf/NaN detector must not poison the envelope
     const xdb = 20 * Math.log10(x + 1e-9);
     const over = xdb - this.thr;
     let targetGr: number;
@@ -606,6 +607,7 @@ export class Compressor {
     }
     const a = targetGr > this.envDb ? this.aA : this.aR;
     this.envDb += a * (targetGr - this.envDb);
+    if (!Number.isFinite(this.envDb)) this.envDb = 0; // recover if it ever blew up
     return sample * 10 ** (-this.envDb / 20);
   }
 

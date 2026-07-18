@@ -789,14 +789,37 @@ function resetToDefaults(): void {
 // ---- wiring ----
 els.play.addEventListener("click", togglePlay);
 els.stop.addEventListener("click", stopPlayback);
-els.seek.addEventListener("input", () => {
-  offset = Number(els.seek.value);
+/** Move the transport to `t` seconds (clamped), updating UI and restarting if playing. */
+function seekTo(t: number): void {
+  offset = Math.max(0, Math.min(t, song.duration));
+  els.seek.value = String(offset);
   els.cur.textContent = fmtTime(offset);
   drawPlayhead(offset);
   if (running) {
     stopScheduled();
     startPlayback();
   }
+}
+
+els.seek.addEventListener("input", () => seekTo(Number(els.seek.value)));
+
+// click (or drag) on the piano roll -> set the transport to that time
+function rollSeek(ev: MouseEvent): void {
+  if (song.duration <= 0) return;
+  const rect = els.roll.getBoundingClientRect();
+  const frac = (ev.clientX - rect.left) / rect.width; // canvas may be CSS-scaled
+  seekTo(frac * song.duration);
+}
+els.roll.style.cursor = "pointer";
+els.roll.addEventListener("mousedown", (ev) => {
+  rollSeek(ev);
+  const move = (e: MouseEvent) => rollSeek(e); // scrub while dragging
+  const up = () => {
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", up);
+  };
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", up);
 });
 
 for (const ctl of [els.gm, els.drums, els.stereo, els.compress, els.reverb, els.delay, els.voice]) {

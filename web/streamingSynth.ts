@@ -96,17 +96,32 @@ interface RtVoice {
 }
 
 /** A pitched note played through one of the five engines, resumably. */
+/** Clamp to a finite ceiling; non-finite -> 0 (keeps NaN/Inf out of feedback FX). */
+function clampFinite(x: number): number {
+  return Number.isFinite(x) ? (x > 16 ? 16 : x < -16 ? -16 : x) : 0;
+}
+
+/** Which engine a Voice selects (matches the constructor's branch order). */
+function voiceEngine(v: Voice): "add" | "fm" | "sub" | "formant" | "ks" {
+  if (v.ks) return "ks";
+  if (v.formant) return "formant";
+  if (v.sub) return "sub";
+  if (v.fm) return "fm";
+  return "add";
+}
+
 class PitchedVoice implements RtVoice {
   chanKey: string;
   firstOffset: number;
   done = false;
   private k = 0;
   private readonly n: number;
-  private readonly a: number; // attack samples
-  private readonly r: number; // release samples
-  private readonly amp: number;
+  private a: number; // attack samples (mutable: live edits)
+  private r: number; // release samples
+  private amp: number;
   private readonly inc0: number;
-  private readonly v: Voice;
+  readonly note: Note; // kept so the mixer can re-resolve this voice on a live edit
+  private v: Voice;
   private readonly vib?: Vibrato;
   private readonly engine: "add" | "fm" | "sub" | "formant" | "ks";
 
@@ -122,6 +137,7 @@ class PitchedVoice implements RtVoice {
   constructor(note: Note, v: Voice, vib: Vibrato | undefined, chanKey: string, firstOffset: number) {
     this.chanKey = chanKey;
     this.firstOffset = firstOffset;
+    this.note = note;
     this.v = v;
     this.vib = vib;
     this.n = Math.max(Math.floor(note.dur * SR), 1);
@@ -168,11 +184,35 @@ class PitchedVoice implements RtVoice {
     }
   }
 
-  /** Attack/release envelope multiplier at sample index k (matches synth.ts). */
+  /**
+   * Attack/release envelope. Smoothstep (zero slope at both ends) rather than a
+   * linear ramp: a linear ramp has a slope discontinuity where it meets the
+   * sustain, which clicks on note onset — the smoothstep removes it.
+   */
   private env(k: number): number {
-    if (this.a > 0 && k < this.a) return k / this.a;
-    if (this.r > 0 && k >= this.n - this.r) return (this.n - 1 - k) / this.r;
+    if (this.a > 0 && k < this.a) {
+      const t = k / this.a;
+      return t * t * (3 - 2 * t);
+    }
+    if (this.r > 0 && k >= this.n - this.r) {
+      const t = (this.n - 1 - k) / this.r;
+      return t <= 0 ? 0 : t * t * (3 - 2 * t);
+    }
     return 1;
+  }
+
+  /**
+   * Live-update from an edited Voice while the note is still sounding — so
+   * changing release/gain/engine-params on a held note is heard immediately
+   * (an attack already past can't retro-apply; that's physical). Engine-type
+   * changes only take effect on new notes (the state would mismatch).
+   */
+  updateVoice(v: Voice): void {
+    if (voiceEngine(v) !== this.engine) return;
+    this.v = v; // fm/sub/etc. params are read from this.v every block -> live
+    this.a = Math.min(Math.floor(v.attack * SR), this.n >> 1);
+    this.r = Math.min(Math.floor(v.release * SR), this.n >> 1);
+    this.amp = (this.note.velocity / 127) ** 1.5 * 0.25 * (v.gain ?? 1);
   }
 
   render(scratch: Float32Array, start: number, count: number): void {
@@ -490,6 +530,15 @@ export class StreamingSynth {
       this.cSig = cs;
       this.comp = opts.compress ? new Compressor(opts.compress) : undefined;
     }
+    this.refreshActiveVoices(); // push instrument/param edits onto held notes
+  }
+
+  /** Re-resolve every sounding pitched voice against the current overrides. */
+  private refreshActiveVoices(): void {
+    if (!this.voiceFor) return;
+    for (const voice of this.active) {
+      if (voice instanceof PitchedVoice) voice.updateVoice(this.voiceFor(voice.note));
+    }
   }
 
   /** Live-update just the reverb/delay *mix* levels without dropping FX tails. */
@@ -586,6 +635,16 @@ export class StreamingSynth {
       if (!voice.done) next.push(voice);
     }
     this.active = next;
+
+    // sanitize before the feedback FX: a runaway per-channel gain could otherwise
+    // drive a reverb/delay comb to Inf, and Inf poisons its state forever (silence
+    // that persists even after the gain is turned back down). Clamp to a finite
+    // ceiling — extreme gain then just distorts instead of killing the engine.
+    for (let i = 0; i < N; i++) {
+      dry[i] = clampFinite(dry[i]);
+      revBus[i] = clampFinite(revBus[i]);
+      delBus[i] = clampFinite(delBus[i]);
+    }
 
     // shared send FX -> widen to stereo
     const L = new Float32Array(N);
