@@ -480,6 +480,56 @@ export function allpassPhaseDelay(a: number, w: number): number {
   return -phase / w;
 }
 
+/** RBJ low-pass (2-pole) — the speaker cabinet's high roll-off. */
+function lowpass(f: number, q: number): Biquad {
+  const w0 = (2 * Math.PI * Math.min(f, SR * 0.45)) / SR;
+  const c = Math.cos(w0), alpha = Math.sin(w0) / (2 * Math.max(q, 0.1));
+  const a0 = 1 + alpha;
+  return { b0: ((1 - c) / 2) / a0, b1: (1 - c) / a0, b2: ((1 - c) / 2) / a0, a1: (-2 * c) / a0, a2: (1 - alpha) / a0 };
+}
+/** RBJ peaking EQ — the amp's midrange presence bump. */
+function peaking(f: number, q: number, gainDb: number): Biquad {
+  const w0 = (2 * Math.PI * f) / SR;
+  const c = Math.cos(w0), alpha = Math.sin(w0) / (2 * Math.max(q, 0.1)), A = 10 ** (gainDb / 40);
+  const a0 = 1 + alpha / A;
+  return { b0: (1 + alpha * A) / a0, b1: (-2 * c) / a0, b2: (1 - alpha * A) / a0, a1: (-2 * c) / a0, a2: (1 - alpha / A) / a0 };
+}
+/** One biquad's stateful sample step (Direct Form I). `s` = [x1,x2,y1,y2]. */
+function biquadStep(cf: Biquad, s: Float64Array, x: number): number {
+  const y = cf.b0 * x + cf.b1 * s[0] + cf.b2 * s[1] - cf.a1 * s[2] - cf.a2 * s[3];
+  s[1] = s[0]; s[0] = x; s[3] = s[2]; s[2] = y;
+  return y;
+}
+
+/**
+ * Guitar amp + speaker-cabinet voicing applied in place over an enveloped buffer:
+ * high-pass (kill rumble) -> tube-ish soft clip -> midrange presence peak ->
+ * cabinet low-pass -> makeup level. Byte-for-byte the same chain as streamingSynth's
+ * AmpStage, so an offline render matches the live/streaming render for the same voice.
+ * All params are clamped finite so a stray value can never poison the biquad state.
+ */
+function applyAmp(tone: Float32Array, cfg: AmpConfig): void {
+  const presence = Number.isFinite(cfg.presence) ? Math.min(Math.max(cfg.presence, 0), 1) : 0;
+  const cabLow = Number.isFinite(cfg.cabLow) ? Math.min(Math.max(cfg.cabLow, 200), 20000) : 20000;
+  const drive = Number.isFinite(cfg.drive) ? Math.max(1, cfg.drive) : 1;
+  const level = Number.isFinite(cfg.level) ? Math.min(Math.max(cfg.level, 0), 4) : 1;
+  const driveNorm = 1 / Math.tanh(drive);
+  const pk = peaking(2200, 1.0, 5 * presence);
+  const lp = lowpass(cabLow, 0.7);
+  const pkS = new Float64Array(4), lpS = new Float64Array(4);
+  const hpA = 1 - Math.exp((-2 * Math.PI * 90) / SR);
+  let hpLp = 0;
+  for (let i = 0; i < tone.length; i++) {
+    let x = tone[i];
+    hpLp += hpA * (x - hpLp); x = x - hpLp; // high-pass
+    x = Math.tanh(x * drive) * driveNorm; // tube-ish soft clip
+    x = biquadStep(pk, pkS, x); // presence
+    x = biquadStep(lp, lpS, x); // cabinet roll-off
+    x *= level;
+    tone[i] = Number.isFinite(x) ? x : 0;
+  }
+}
+
 export interface KsSetup {
   Li: number; // integer delay-line length
   C: number; // tuning all-pass coefficient (fractional delay, accurate pitch)
@@ -499,7 +549,16 @@ export function ksStringSetup(freq: number, ks: KsConfig): KsSetup {
   const w0 = (2 * Math.PI * freq) / SR;
   const disp = 0.5 * Math.min(Math.max(ks.stiffness ?? 0, 0), 1); // 0..0.5 (sharpens high partials)
   const pdDisp = disp !== 0 ? allpassPhaseDelay(disp, w0) : 1; // disp=0 ⇒ z⁻¹ (1 samp)
-  const DAMP_DELAY = 0.5; // the 2-point loop averager's ~½-sample group delay
+  // Damping is a 2-point loop averager (1-b)·x[n] + b·x[n-1]. Its high-frequency
+  // roll-off is MONOTONIC only for b ∈ [0, 0.5]: at b=0.5 it puts a zero at Nyquist
+  // (maximally dark); for b>0.5 the Nyquist gain (1-2b)² RISES again, i.e. the string
+  // gets BRIGHTER. So we map the documented 0..1 "damping" knob onto the usable
+  // [0, 0.5] half — higher is now always darker. (Passing b straight through, as the
+  // code used to, meant damping>0.5 paradoxically re-brightened, and every guitar
+  // preset clustered around the same tone regardless of its damping value.)
+  const dRaw = Number.isFinite(ks.damping) ? Math.min(Math.max(ks.damping, 0), 1) : 0.5;
+  const bEff = 0.5 * dRaw;
+  const DAMP_DELAY = bEff; // the averager's group delay ≈ bEff samples (keeps tuning exact)
   const target = SR / freq - pdDisp - DAMP_DELAY;
   let Li = Math.floor(target);
   if (Li < 2) Li = 2;
@@ -507,7 +566,9 @@ export function ksStringSetup(freq: number, ks: KsConfig): KsSetup {
   if (frac < 0) frac = 0;
   else if (frac > 1) frac = 1;
   const C = (1 - frac) / (1 + frac); // first-order fractional-delay all-pass
-  return { Li, C, disp, b: Math.min(Math.max(ks.damping, 0), 1), decay: ks.decay };
+  // Guard decay: a non-finite feedback gain would latch the whole loop to NaN.
+  const decay = Number.isFinite(ks.decay) ? Math.min(Math.max(ks.decay, 0), 1) : 0.996;
+  return { Li, C, disp, b: bEff, decay };
 }
 
 /**
@@ -573,7 +634,7 @@ function renderKs(
     let bK = b, decayK = decay;
     if (k >= relStart) {
       const rt = (k - relStart) / Math.max(relSamples, 1);
-      bK = b + (1 - b) * relDamp * rt;
+      bK = b + (0.5 - b) * relDamp * rt; // ramp toward b=0.5 (the averager's darkest), not 1 (which re-brightens)
       decayK = decay * (1 - 0.5 * relDamp * rt);
     }
     let mix = 0;
@@ -666,6 +727,9 @@ function renderTone(
     }
   }
   applyEnvelope(tone, v.attack, v.release);
+  // guitar amp + cabinet voicing (electric colour) — mirrors streaming AmpStage so
+  // offline == streaming for the same voice; also sanitizes any stray non-finite sample.
+  if (v.amp) applyAmp(tone, v.amp);
   return tone;
 }
 

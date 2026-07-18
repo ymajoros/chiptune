@@ -113,11 +113,17 @@ class AmpStage {
   private readonly lp: Biquad; private readonly lpS = [0, 0, 0, 0];
   private readonly drive: number; private readonly driveNorm: number; private readonly level: number;
   constructor(cfg: AmpConfig) {
-    this.pk = peaking(2200, 1.0, 5 * Math.min(Math.max(cfg.presence, 0), 1)); // up to +5 dB
-    this.lp = lowpass(cfg.cabLow, 0.7);
-    this.drive = Math.max(1, cfg.drive);
+    // Clamp every field finite BEFORE it reaches a filter coeff or 1/tanh: a NaN
+    // presence -> NaN peaking coeffs, a NaN/0 drive -> NaN driveNorm, and either
+    // one latches the biquad state to NaN so the voice is silent forever (the
+    // "moving Presence silences it" bug). Clamped, any value stays stable/finite.
+    const presence = Number.isFinite(cfg.presence) ? Math.min(Math.max(cfg.presence, 0), 1) : 0;
+    const cabLow = Number.isFinite(cfg.cabLow) ? Math.min(Math.max(cfg.cabLow, 200), 20000) : 20000;
+    this.pk = peaking(2200, 1.0, 5 * presence); // up to +5 dB
+    this.lp = lowpass(cabLow, 0.7);
+    this.drive = Number.isFinite(cfg.drive) ? Math.max(1, cfg.drive) : 1;
     this.driveNorm = 1 / Math.tanh(this.drive);
-    this.level = cfg.level;
+    this.level = Number.isFinite(cfg.level) ? Math.min(Math.max(cfg.level, 0), 4) : 1;
   }
   process(x: number): number {
     this.hpLp += this.hpA * (x - this.hpLp);
@@ -450,7 +456,7 @@ export class PitchedVoice implements RtVoice {
           let bK = b, decayK = decay;
           if (this.k >= relStart) {
             const rt = (this.k - relStart) / Math.max(this.r, 1);
-            bK = b + (1 - b) * relDamp * rt;
+            bK = b + (0.5 - b) * relDamp * rt; // ramp toward b=0.5 (the averager's darkest), not 1 (which re-brightens)
             decayK = decay * (1 - 0.5 * relDamp * rt);
           }
           let mix = 0;
@@ -482,7 +488,8 @@ export class PitchedVoice implements RtVoice {
           // pick/finger contact-noise transient at the attack (mirrors renderKs)
           const pluckNoise = Math.min(Math.max(this.v.ks?.pluckNoise ?? 0, 0), 1);
           if (pluckNoise > 0 && this.k < Math.floor(0.006 * SR)) out += (Math.random() * 2 - 1) * pluckNoise * Math.exp(-this.k / (0.0015 * SR));
-          scratch[i] = out * amp * this.env(this.k);
+          const y = out * amp * this.env(this.k);
+          scratch[i] = Number.isFinite(y) ? y : 0; // never let the feedback loop leak NaN downstream (poisons ctx)
           this.k++;
         }
         break;
