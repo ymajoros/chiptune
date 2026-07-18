@@ -41,8 +41,10 @@ const FAMILY: Voice[] = [
   // 2  Organ — additive DRAWBARS (Hammond is sines at 8'/5⅓'/4'/2⅔'/2'…), which
   //     is richer and cuts through a mix far better than a thin FM sine did.
   { attack: 0.015, release: 0.05, gain: 0.95, foldAbove: 81, harmonics: [{ multiple: 2, amp: 0.6 }, { multiple: 3, amp: 0.35 }, { multiple: 4, amp: 0.45 }, { multiple: 6, amp: 0.2 }] },
-  // 3  Guitar — plucked Karplus-Strong string
-  { attack: 0.003, release: 0.08, gain: 0.95, ks: ks(0.996, 0.5) },
+  // 3  Guitar — plucked Karplus-Strong string. (damping 1.0 -> the averager's
+  //     bEff 0.5, i.e. the old code's darkest point at b=0.5, preserved after the
+  //     damping-monotonicity fix that halved the knob's mapping.)
+  { attack: 0.003, release: 0.08, gain: 0.95, ks: ks(0.996, 1.0) },
   // 4  Bass — low filtered saw, quick filter env
   { attack: 0.005, release: 0.06, gain: 1.1, sub: sub("saw", 500, 0.3, 900, 0.12, 0, 1) },
   // 5  Strings — bowed: unison saw through a slow filter
@@ -61,8 +63,9 @@ const FAMILY: Voice[] = [
   { attack: 0.2, release: 0.3, gain: 0.6, sub: sub("saw", 900, 0.15, 700, 1.2, 18, 5) },
   // 12 Synth effects — evolving FM
   { attack: 0.1, release: 0.2, gain: 0.6, fm: fm(2.5, 5, 1.5, 0.4) },
-  // 13 Ethnic — plucked (sitar/banjo/koto), brighter string
-  { attack: 0.003, release: 0.08, gain: 0.9, ks: ks(0.994, 0.35) },
+  // 13 Ethnic — plucked (sitar/banjo/koto), brighter string. (damping doubled
+  //     0.35->0.70 to preserve timbre after the damping-mapping fix.)
+  { attack: 0.003, release: 0.08, gain: 0.9, ks: ks(0.994, 0.7) },
   // 14 Percussive — short FM bell / mallet
   { attack: 0.002, release: 0.1, gain: 0.8, fm: fm(3, 5, 0.35, 0) },
   // 15 Sound effects — best-effort noisy sub
@@ -71,7 +74,7 @@ const FAMILY: Voice[] = [
 
 /** Per-program overrides where the family default misses badly. */
 const OVERRIDE: Record<number, Voice> = {
-  0: { attack: 0.002, release: 0.2, gain: 0.82, ks: ks(0.9968, 0.42, 0.3, 0.42, 0, 0.5, { strings: 3, spread: 3.5, velBright: 0.45, pluckNoise: 0.05 }) }, // Acoustic Grand — 3 slightly-detuned strings (unison beating/chorus), harder = brighter, felt-hammer tick
+  0: { attack: 0.002, release: 0.2, gain: 0.82, ks: ks(0.9968, 0.84, 0.3, 0.42, 0, 0.5, { strings: 3, spread: 3.5, velBright: 0.45, pluckNoise: 0.05 }) }, // Acoustic Grand — 3 slightly-detuned strings (unison beating/chorus), harder = brighter, felt-hammer tick (damping 0.42->0.84 preserves tone after the mapping fix)
   16: { attack: 0.012, release: 0.05, gain: 1.0, foldAbove: 81, harmonics: [{ multiple: 2, amp: 0.7 }, { multiple: 3, amp: 0.4 }, { multiple: 4, amp: 0.5 }, { multiple: 6, amp: 0.25 }, { multiple: 8, amp: 0.15 }] }, // Drawbar Organ — full registration
   // Percussive Organ — this arrangement doubles it high (C6-E6); the 6'/8' drawbars
   // there scream past 8kHz and bury the mix, so keep it low and drop the top ranks.
@@ -87,10 +90,10 @@ const OVERRIDE: Record<number, Voice> = {
   // round for the fretless "mwah": soft finger pluck (tone 0.4, pick 0.3 mid-string),
   // moderate damping rolling off the highs into a singing tone, a long low ring
   // (decay 0.9975), a touch of body, a slightly slower/softer attack than a picked bass.
-  35: { attack: 0.012, release: 0.1, gain: 1.2, ks: ks(0.9975, 0.5, 0.22, 0.05, 0.3, 0.4) },
+  35: { attack: 0.012, release: 0.1, gain: 1.2, ks: ks(0.9975, 1.0, 0.22, 0.05, 0.3, 0.4) }, // damping 0.5->1.0 keeps the round, dark "mwah" after the mapping fix
   38: { attack: 0.004, release: 0.05, gain: 1.15, sub: sub("saw", 700, 0.5, 1400, 0.12, 0, 1) }, // Synth Bass 1
-  45: { attack: 0.003, release: 0.08, gain: 0.85, ks: ks(0.99, 0.4, 0.12, 0.16, 0.25, 0.55) }, // Pizzicato Strings — plucked, bodied
-  46: { attack: 0.003, release: 0.2, gain: 0.85, ks: ks(0.998, 0.35, 0.2, 0.1, 0.22, 0.62), sympathetic: symp([36, 41, 43, 45, 48, 50, 52, 55, 57, 60, 64, 67], 0.72, 0.25, 0.22) }, // Orchestral Harp — resonant string
+  45: { attack: 0.003, release: 0.08, gain: 0.85, ks: ks(0.99, 0.8, 0.12, 0.16, 0.25, 0.55) }, // Pizzicato Strings — plucked, bodied (damping 0.4->0.8 preserves tone after the mapping fix)
+  46: { attack: 0.003, release: 0.2, gain: 0.85, ks: ks(0.998, 0.7, 0.2, 0.1, 0.22, 0.62), sympathetic: symp([36, 41, 43, 45, 48, 50, 52, 55, 57, 60, 64, 67], 0.72, 0.25, 0.22) }, // Orchestral Harp — resonant string (damping 0.35->0.70 preserved)
   52: { attack: 0.08, release: 0.2, gain: 0.7, formant: { vowel: "a", voices: 4, detune: 12 } }, // Choir Aahs
   53: { attack: 0.08, release: 0.2, gain: 0.7, formant: { vowel: "o", voices: 4, detune: 14 } }, // Voice Oohs
   71: { attack: 0.03, release: 0.08, gain: 0.75, harmonics: [{ multiple: 3, amp: 0.4 }, { multiple: 5, amp: 0.2 }, { multiple: 7, amp: 0.1 }] }, // Clarinet — odd harmonics
@@ -104,12 +107,15 @@ const OVERRIDE: Record<number, Voice> = {
   // Atmosphere (FX 4) — a soft, dark, slowly-evolving PAD, not the metallic FM
   // that read as a sitar. Wide detuned saws through a low cutoff, slow attack.
   99: { attack: 0.08, release: 0.6, gain: 1.7, sub: sub("saw", 700, 0.12, 500, 2.0, 22, 5) },
-  // Guitar family on the resonant-string model, deliberately differentiated:
-  // nylon = warmest/most body, steel = brighter/metallic, clean = electric, in
-  // between. Voiced by ear against a real recording of the arrangement.
-  24: { attack: 0.008, release: 0.14, gain: 0.95, ks: ks(0.995, 0.66, 0.52, 0.04, 0.34, 0.3), sympathetic: symp(GTR_STRINGS, 0.5, 0.4, 0.14) }, // Nylon Guitar — warm, woody, most acoustic
-  25: { attack: 0.008, release: 0.18, gain: 0.88, ks: ks(0.997, 0.5, 0.28, 0.07, 0.18, 0.5), sympathetic: symp(GTR_STRINGS, 0.6, 0.32, 0.2) }, // Steel Guitar — metallic but warm/realistic
-  27: { attack: 0.022, release: 0.16, gain: 0.9, ks: ks(0.996, 0.54, 0.1, 0.02, 0.26, 0.4), sympathetic: symp(GTR_STRINGS, 0.55, 0.35, 0.18), amp: cab(1.4, 0.7, 4500, 1.15) }, // Clean Guitar — electric, in-between nylon and steel
+  // Guitar family on the resonant-string model, deliberately differentiated and
+  // re-voiced for the fixed (now monotonic) damping. Measured HF-energy ratio
+  // spreads them clearly: nylon 0.45 (warmest/woodiest) < clean 0.67 < steel 0.70
+  // (brightest/ringiest); jazz is the dark mellow archtop, muted the short palm-mute.
+  24: { attack: 0.009, release: 0.14, gain: 0.95, ks: ks(0.9935, 0.85, 0.55, 0.03, 0.36, 0.26), sympathetic: symp(GTR_STRINGS, 0.5, 0.4, 0.14) }, // Nylon Guitar — warm, woody, most acoustic (dark, soft finger pluck, short decay)
+  25: { attack: 0.006, release: 0.2, gain: 0.88, ks: ks(0.9978, 0.24, 0.2, 0.13, 0.13, 0.8), sympathetic: symp(GTR_STRINGS, 0.62, 0.3, 0.22) }, // Steel Guitar — bright, metallic, long ringing (low damping, hard pick near bridge, stiff)
+  26: { attack: 0.012, release: 0.16, gain: 0.9, ks: ks(0.9965, 0.62, 0.3, 0.05, 0.3, 0.42), amp: cab(1.15, 0.25, 3600, 1.05) }, // Jazz Guitar — mellow hollow-body archtop through a warm, dark cab (was falling through to the generic guitar, identical to Muted)
+  27: { attack: 0.022, release: 0.16, gain: 0.9, ks: ks(0.996, 0.5, 0.1, 0.02, 0.26, 0.5), sympathetic: symp(GTR_STRINGS, 0.55, 0.35, 0.18), amp: cab(1.4, 0.7, 4500, 1.15) }, // Clean Guitar — electric (bright presence-boosted cab), in-between nylon and steel
+  28: { attack: 0.004, release: 0.06, gain: 0.9, ks: ks(0.972, 0.9, 0.08, 0.02, 0.2, 0.34, { releaseDamp: 0.4 }) }, // Muted Guitar — palm-muted: very short/choked decay, dark (was falling through to the generic guitar, identical to Jazz)
   80: { attack: 0.005, release: 0.06, gain: 0.8, sub: sub("square", 2200, 0.3, 1400, 0.3, 4, 2) }, // Square Lead
 };
 
