@@ -25,7 +25,7 @@ export interface Voice {
 
 const fm = (ratio: number, index: number, decay: number, sustain: number): FmConfig => ({ ratio, index, decay, sustain });
 const sub = (wave: "saw" | "square", cutoff: number, resonance: number, envAmount: number, envDecay: number, detune: number, voices: number, drive = 1): SubConfig => ({ wave, cutoff, resonance, envAmount, envDecay, detune, voices, drive });
-const ks = (decay: number, damping: number): KsConfig => ({ decay, damping });
+const ks = (decay: number, damping: number, body = 0): KsConfig => ({ decay, damping, body });
 
 // --- family defaults (program >> 3 selects the family) ---
 const FAMILY: Voice[] = [
@@ -71,9 +71,9 @@ const OVERRIDE: Record<number, Voice> = {
   // Percussive Organ — this arrangement doubles it high (C6-E6); the 6'/8' drawbars
   // there scream past 8kHz and bury the mix, so keep it low and drop the top ranks.
   17: { attack: 0.006, release: 0.05, gain: 0.6, foldAbove: 81, harmonics: [{ multiple: 2, amp: 0.5 }, { multiple: 3, amp: 0.28 }, { multiple: 4, amp: 0.2 }] },
-  29: { attack: 0.006, release: 0.1, gain: 0.78, sub: sub("saw", 1900, 0.35, 1200, 0.5, 8, 2, 4) }, // Overdrive Guitar — crunch
+  29: { attack: 0.006, release: 0.12, gain: 0.68, sub: sub("saw", 3200, 0.4, 900, 0.5, 10, 2, 6) }, // Overdrive Guitar — crunch
   19: { attack: 0.05, release: 0.12, gain: 0.85, foldAbove: 81, harmonics: [{ multiple: 2, amp: 0.5 }, { multiple: 3, amp: 0.3 }, { multiple: 4, amp: 0.5 }, { multiple: 5, amp: 0.25 }, { multiple: 8, amp: 0.2 }] }, // Church Organ — fuller, principal ranks
-  30: { attack: 0.004, release: 0.12, gain: 0.7, sub: sub("saw", 2000, 0.3, 800, 0.6, 12, 2, 9) }, // Distortion Guitar — heavy fuzz
+  30: { attack: 0.004, release: 0.15, gain: 0.6, sub: sub("saw", 4200, 0.45, 700, 0.7, 14, 2, 12) }, // Distortion Guitar — fuzz through an open cabinet
   // Finger Bass — matched to the record's measured bass: rounded (h2~0.5, fast
   // harmonic rolloff) and plucked (decays to ~0.2 sustain over ~0.3s).
   33: { attack: 0.006, release: 0.05, gain: 1.5, fm: fm(1, 2.8, 0.25, 0.28) },
@@ -91,7 +91,8 @@ const OVERRIDE: Record<number, Voice> = {
   // (darker, less metallic) and a touch more sustain than the bright default.
   // Steel Guitar — steel strings ring longer and brighter than the default
   // pluck; a soft attack rounds off the abrupt KS onset that read as mechanical.
-  25: { attack: 0.006, release: 0.18, gain: 0.9, ks: ks(0.9975, 0.5) },
+  24: { attack: 0.004, release: 0.14, gain: 0.9, ks: ks(0.995, 0.6, 0.35) }, // Nylon Guitar — soft, bodied
+  25: { attack: 0.006, release: 0.18, gain: 0.9, ks: ks(0.9975, 0.5, 0.3) },
   27: { attack: 0.004, release: 0.12, gain: 0.9, ks: ks(0.9955, 0.62) },
   80: { attack: 0.005, release: 0.06, gain: 0.8, sub: sub("square", 2200, 0.3, 1400, 0.3, 4, 2) }, // Square Lead
 };
