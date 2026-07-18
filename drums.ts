@@ -250,22 +250,25 @@ export function renderDrum(note: number, velocity: number): Float32Array {
       buf = crashCymbal(secs(0.5), 760, 0.3, 0.14);
       gain = 0.75;
       break;
-    case 51: // Ride — a soft stick "ting" riding on a shimmer wash
+    case 51: // Ride — a stick "ting": a brief metallic attack over a shimmer wash
     case 59: {
+      // The ping is a SHORT, high transient (fast decay) so it colours the attack
+      // without ringing as a sustained pitch — a repeated pitched ring reads as a
+      // melodic note in the drum part, which it must not.
       const n = secs(0.6);
-      const ping = bellTone(n, 620, 0.25);
-      const shimmer = metallic(n, 1500, 0.3, 0.6, 0.3);
+      const ping = bellTone(n, 1150, 0.05);
+      const shimmer = metallic(n, 1500, 0.32, 0.62, 0.34);
       buf = new Float32Array(n);
-      for (let k = 0; k < n; k++) buf[k] = 0.3 * ping[k] + 0.5 * shimmer[k];
+      for (let k = 0; k < n; k++) buf[k] = 0.18 * ping[k] + 0.55 * shimmer[k];
       gain = 0.4;
       break;
     }
-    case 53: { // Ride Bell — a clear, bright bell "ting" (bell-forward)
-      const n = secs(0.55);
-      const ping = bellTone(n, 760, 0.34);
-      const shimmer = metallic(n, 1650, 0.2, 0.6, 0.22);
+    case 53: { // Ride Bell — a brighter bell accent, but still a strike not a note
+      const n = secs(0.5);
+      const ping = bellTone(n, 1350, 0.08);
+      const shimmer = metallic(n, 1650, 0.26, 0.62, 0.3);
       buf = new Float32Array(n);
-      for (let k = 0; k < n; k++) buf[k] = 0.55 * ping[k] + 0.25 * shimmer[k];
+      for (let k = 0; k < n; k++) buf[k] = 0.28 * ping[k] + 0.5 * shimmer[k];
       gain = 0.4;
       break;
     }
