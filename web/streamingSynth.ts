@@ -30,6 +30,7 @@ import {
   type Reverb,
   type Delay,
   type FormantConfig,
+  type SympatheticVoice,
   Compressor,
   VOWELS,
   gmVoiceFor,
@@ -494,6 +495,94 @@ class StreamPingPong {
   }
 }
 
+/**
+ * Per-instrument sympathetic resonance (streaming): a bank of tuned string
+ * resonators, driven by one channel's signal, ringing in sympathy. Stateful
+ * across blocks. Ported from synth.ts's sympatheticWet but fixed-mix (streaming
+ * can't peek at the whole buffer to peak-normalise) — presets set `mix` directly.
+ */
+class SympatheticBank {
+  private readonly lines: Float32Array[];
+  private readonly idx: Int32Array;
+  private readonly lp: Float64Array;
+  private readonly prevOut: Float64Array;
+  private readonly curOut: Float64Array;
+  private readonly coupled: number[][];
+  private readonly N: number;
+  private readonly feedback: number;
+  private readonly damping: number;
+  private readonly couple = 0.03;
+  private readonly drive: number;
+  private readonly mix: number;
+  private envFast = 0;
+  private envSlow = 0;
+  private readonly cf: number;
+  private readonly cs: number;
+  input: Float32Array = new Float32Array(0); // this block's channel signal
+
+  constructor(cfg: SympatheticVoice) {
+    const freqs = cfg.strings.map((m) => 440 * 2 ** ((m - 69) / 12));
+    this.N = freqs.length;
+    this.lines = freqs.map((f) => new Float32Array(Math.max(2, Math.round(SR / f))));
+    this.idx = new Int32Array(this.N);
+    this.lp = new Float64Array(this.N);
+    this.prevOut = new Float64Array(this.N);
+    this.curOut = new Float64Array(this.N);
+    const base = freqs[0];
+    const semis = freqs.map((f) => Math.round(12 * Math.log2(f / base)));
+    this.coupled = freqs.map(() => [] as number[]);
+    for (let i = 0; i < this.N; i++)
+      for (let j = 0; j < this.N; j++) {
+        if (i === j) continue;
+        const d = Math.abs(semis[i] - semis[j]);
+        if (d === 12 || d === 7) this.coupled[i].push(j); // octave / fifth bridge coupling
+      }
+    this.feedback = cfg.feedback;
+    this.damping = cfg.damping;
+    this.mix = cfg.mix;
+    this.drive = 1.2 / Math.sqrt(this.N);
+    this.cf = 1 - Math.exp(-1 / (0.002 * SR)); // fast onset-gate env (~2ms)
+    this.cs = 1 - Math.exp(-1 / (0.06 * SR)); // slow onset-gate env (~60ms)
+  }
+
+  /** Resize + clear this block's input accumulator. */
+  ensure(N: number): void {
+    if (this.input.length !== N) this.input = new Float32Array(N);
+    else this.input.fill(0);
+  }
+
+  /** Run the resonators over this.input, adding mix*wet into out[0..N). */
+  flush(out: Float32Array, N: number): void {
+    const inp = this.input;
+    for (let k = 0; k < N; k++) {
+      const x = inp[k];
+      const a = Math.abs(x);
+      this.envFast += this.cf * (a - this.envFast);
+      this.envSlow += this.cs * (a - this.envSlow);
+      const gate = Math.max(0, this.envFast - this.envSlow); // onset transient drives the strings
+      const exc = x * (0.1 + gate * 6);
+      let wet = 0;
+      for (let i = 0; i < this.N; i++) {
+        const line = this.lines[i];
+        const p = this.idx[i];
+        const yD = line[p];
+        this.lp[i] += this.damping * (yD - this.lp[i]);
+        let couple = 0;
+        const nb = this.coupled[i];
+        for (let c = 0; c < nb.length; c++) couple += this.prevOut[nb[c]];
+        let y = Math.tanh(exc * this.drive + this.feedback * this.lp[i] + this.couple * couple);
+        if (!Number.isFinite(y)) y = 0;
+        line[p] = y;
+        this.idx[i] = p + 1 === line.length ? 0 : p + 1;
+        this.curOut[i] = y;
+        wet += y;
+      }
+      this.prevOut.set(this.curOut);
+      out[k] += this.mix * wet;
+    }
+  }
+}
+
 /** Signature strings to decide when a shared FX unit must be rebuilt. */
 const reverbSig = (r?: Reverb) => (r ? `${r.room}` : "off");
 const delaySig = (d?: Delay) => (d ? `${d.time}` : "off");
@@ -512,6 +601,7 @@ export class StreamingSynth {
   private active: RtVoice[] = [];
   private voiceFor?: (n: Note) => Voice;
   private mixer = new Map<string, ChannelMix>();
+  private symBanks = new Map<string, SympatheticBank>(); // per-channel sympathetic strings
 
   // shared FX
   private revL?: StreamReverb;
@@ -569,6 +659,7 @@ export class StreamingSynth {
       this.cSig = cs;
       this.comp = opts.compress ? new Compressor(opts.compress) : undefined;
     }
+    this.symBanks.clear(); // rebuilt from voices; picks up any sympathetic edits
     this.refreshActiveVoices(); // push instrument/param edits onto held notes
   }
 
@@ -590,6 +681,7 @@ export class StreamingSynth {
   seek(sample: number): void {
     this.pos = Math.max(0, Math.floor(sample));
     this.active = [];
+    this.symBanks.clear(); // drop sympathetic ring tails so a seek doesn't smear
     // first note at/after the playhead (notes already sounding aren't retriggered)
     this.noteIdx = 0;
     while (this.noteIdx < this.sorted.length && this.sorted[this.noteIdx].s < this.pos) this.noteIdx++;
@@ -652,10 +744,15 @@ export class StreamingSynth {
         if (!this.opts.drums) continue;
         this.active.push(new DrumVoice(note, `${note.track}:${note.channel}`, offset));
       } else {
+        const chanKey = `${note.track}:${note.channel}`;
         const v = this.voiceFor ? this.voiceFor(note) : (this.opts as unknown as Voice);
-        this.active.push(new PitchedVoice(note, v, this.opts.vibrato, `${note.track}:${note.channel}`, offset));
+        if (v.sympathetic && !this.symBanks.has(chanKey)) this.symBanks.set(chanKey, new SympatheticBank(v.sympathetic));
+        this.active.push(new PitchedVoice(note, v, this.opts.vibrato, chanKey, offset));
       }
     }
+
+    // reset each sympathetic bank's input accumulator for this block
+    for (const bank of this.symBanks.values()) bank.ensure(N);
 
     // advance every active voice, routing its output into the three buses
     const next: RtVoice[] = [];
@@ -670,10 +767,15 @@ export class StreamingSynth {
         for (let i = start; i < N; i++) dry[i] += g * scratch[i];
         if (rev > 0) { const gr = g * rev; for (let i = start; i < N; i++) revBus[i] += gr * scratch[i]; }
         if (del > 0) { const gd = g * del; for (let i = start; i < N; i++) delBus[i] += gd * scratch[i]; }
+        const bank = this.symBanks.get(voice.chanKey);
+        if (bank) { const inp = bank.input; for (let i = start; i < N; i++) inp[i] += g * scratch[i]; }
       }
       if (!voice.done) next.push(voice);
     }
     this.active = next;
+
+    // sympathetic strings ring from each channel's signal, into the dry bus
+    for (const bank of this.symBanks.values()) bank.flush(dry, N);
 
     // sanitize before the feedback FX: a runaway per-channel gain could otherwise
     // drive a reverb/delay comb to Inf, and Inf poisons its state forever (silence
@@ -717,6 +819,7 @@ export class StreamingSynth {
     if (bad) {
       L.fill(0); R.fill(0);
       this.active = this.active.filter((v) => !(v instanceof PitchedVoice)); // drop pitched voices; drums are one-shots
+      this.symBanks.clear(); // sympathetic banks may hold the poison; rebuild fresh
       this.comp = this.opts.compress ? new Compressor(this.opts.compress) : undefined;
       this.limiter = new Compressor(LIMITER);
       this.revL = this.opts.reverb ? new StreamReverb(this.opts.reverb.room, 0) : undefined;

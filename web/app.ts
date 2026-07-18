@@ -598,10 +598,16 @@ function renderInstrumentEditor(): void {
     </div>`;
   }
 
+  const sy = voice.sympathetic;
+  const symHtml = `<h3>Sympathetic strings</h3><div class="grid">
+      ${NUM("Ring amount (mix)", key, "sympathetic", "mix", sy?.mix ?? 0, 0, 0.6, 0.02)}
+      ${NUM("Ring time", key, "sympathetic", "feedback", sy?.feedback ?? 0.55, 0, 0.95, 0.02)}
+    </div><span class="filelabel">The instrument's own open strings ringing along (guitar-tuned by default). 0 = off.</span>`;
+
   els.instEditor.innerHTML =
     `<div class="row"><strong>Track ${info?.track} · Ch ${(info?.channel ?? 0) + 1}</strong>
        <span class="filelabel">GM: ${gmName} — change instrument or engine, edits are heard live &amp; on the keyboard below.</span></div>
-     ${engineSel}${common}${params}`;
+     ${engineSel}${common}${params}${symHtml}`;
 }
 
 function harmRow(i: number, h: Harmonic): string {
@@ -635,6 +641,12 @@ els.instEditor.addEventListener("input", (e) => {
   else if (field === "release") { ov.release = Number(t.value) / 1000; }
   else if (field === "gain") { ov.gain = Number(t.value); }
   else if (field === "foldAbove") { const n = Number(t.value); if (n <= 0) delete ov.foldAbove; else ov.foldAbove = n; }
+  else if (field === "sympathetic") {
+    // the instrument's own strings ringing along; seed strings/damping from the
+    // current voice (guitar open strings if none), edit only mix / ring-time here.
+    const base = ov.sympathetic ?? resolveVoice(key).voice.sympathetic ?? { strings: [40, 45, 50, 55, 59, 64], feedback: 0.55, damping: 0.35, mix: 0 };
+    ov.sympathetic = { ...base, [sub]: Number(t.value) };
+  }
   else {
     // engine param: mutate a copy of the full engine config
     const engine = field as EngineType;
