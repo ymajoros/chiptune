@@ -124,6 +124,20 @@ export interface Sympathetic {
   couple: number; // 0..~0.1 energy bled between octave/fifth-related strings
 }
 
+/**
+ * Per-instrument sympathetic resonance: the instrument's *own* undamped strings
+ * (a guitar's six open strings, a piano's strings with the pedal down) ringing
+ * along with what's played. Unlike `Sympathetic` (a global, song-tuned effect on
+ * the whole mix), this is attached to one voice and driven only by that
+ * instrument's signal, so each instrument rings with its own strings.
+ */
+export interface SympatheticVoice {
+  strings: number[]; // MIDI pitches of the resonating strings (e.g. guitar open strings)
+  feedback: number; // 0..1 ring/decay time
+  damping: number; // 0..1 loop low-pass (lower -> brighter, longer high ring)
+  mix: number; // wet level added to the instrument's dry signal
+}
+
 export interface RenderOptions {
   attack: number; // seconds
   release: number; // seconds
@@ -162,6 +176,7 @@ export interface VoiceOverride {
   sub?: SubConfig;
   ks?: KsConfig;
   formant?: FormantConfig;
+  sympathetic?: SympatheticVoice; // the instrument's own strings ringing in sympathy
 }
 
 // Vowel formant table: [F1,F2,F3] Hz, matching gains, and bandwidths Hz.
@@ -516,6 +531,7 @@ export interface Voice {
   sub?: SubConfig;
   ks?: KsConfig;
   formant?: FormantConfig;
+  sympathetic?: SympatheticVoice; // the instrument's own strings ringing in sympathy
 }
 
 /** Synthesize one note's tone (n samples) with a given voice. */
@@ -637,7 +653,7 @@ export function gmVoiceFor(song: Song, overrides?: Record<string, VoiceOverride>
         // swaps the engine (e.g. sets `fm`) must clear the others.
         const engineKeys: (keyof VoiceOverride)[] = ["harmonics", "fm", "sub", "ks", "formant"];
         if (engineKeys.some((k) => ov[k] !== undefined)) {
-          v = { attack: v.attack, release: v.release, gain: v.gain, foldAbove: v.foldAbove };
+          v = { attack: v.attack, release: v.release, gain: v.gain, foldAbove: v.foldAbove, sympathetic: v.sympathetic };
         }
         v = { ...v, ...ov };
       }
