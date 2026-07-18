@@ -66,19 +66,29 @@
       .mixbtn.on-mute { background: #7a2233; border-color: #b5179e; color: #fff; }
       .mixbtn.on-solo { background: #2a5a2a; border-color: #8ac926; color: #fff; }
       .cellval { color: var(--muted); font-variant-numeric: tabular-nums; display: inline-block; min-width: 26px; }
-      /* effect routing tabs */
-      .fxtabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
-      .fxtab { background: transparent; border: 1px solid transparent; border-bottom: none; border-radius: 8px 8px 0 0; padding: 6px 14px; font-size: 13px; color: var(--muted); }
-      .fxtab:hover:not(:disabled) { border-color: var(--border); }
-      .fxtab.active { background: var(--panel2); border-color: var(--border); color: var(--fg); }
-      .fxpanel { display: none; }
-      .fxpanel.active { display: block; }
-      .fxsends { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 4px 16px; margin-top: 10px; }
-      .fxsend { display: flex; align-items: center; gap: 8px; font-size: 12px; }
-      .fxsend label { color: var(--muted); flex: 0 0 auto; min-width: 92px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      .fxsend input[type="range"] { flex: 1; min-width: 60px; }
-      .fxglobals { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
-      .fxglobals .grp { display: inline-flex; align-items: center; gap: 6px; }
+      /* dynamic effects rack */
+      #fxRack { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+      .fxcard { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+      .fxcard.disabled { opacity: 0.55; }
+      .fxcard .fxhead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+      .fxcard .fxname { background: var(--panel); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; font-size: 13px; font-weight: 600; width: 130px; }
+      .fxcard .fxtype { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; border: 1px solid var(--border); border-radius: 6px; padding: 1px 8px; }
+      .fxcard .fxrm { margin-left: auto; padding: 2px 10px; font-size: 12px; border-radius: 6px; color: var(--muted); }
+      .fxcard .fxrm:hover { border-color: #b5179e; color: #fff; }
+      .fxparams { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px 18px; margin-top: 8px; }
+      .fxparam { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+      .fxparam label { color: var(--muted); flex: 0 0 auto; min-width: 62px; }
+      .fxparam input[type="range"] { flex: 1; min-width: 60px; }
+      .matrixTitle { font-size: 13px; margin: 16px 0 6px; color: var(--fg); font-weight: 600; }
+      .fxmatrix-wrap { overflow-x: auto; }
+      #fxMatrix table { border-collapse: collapse; font-size: 12px; }
+      #fxMatrix th, #fxMatrix td { padding: 4px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; text-align: center; }
+      #fxMatrix th { color: var(--muted); font-weight: 600; }
+      #fxMatrix td.rowhdr, #fxMatrix th.rowhdr { text-align: left; color: var(--fg); position: sticky; left: 0; background: var(--panel); }
+      #fxMatrix th.colhdr.disabled { opacity: 0.5; }
+      #fxMatrix input[type="range"] { width: 70px; vertical-align: middle; }
+      #fxMatrix .mcell { display: flex; flex-direction: column; align-items: center; gap: 1px; }
+      #fxMatrix .mcell .cellval { min-width: 0; font-size: 10px; }
       .editbtn { padding: 2px 8px; font-size: 12px; border-radius: 6px; }
       .editbtn.editing { border-color: var(--accent); color: var(--accent); }
       /* instrument editor */
@@ -146,41 +156,20 @@
       </div>
 
       <div class="panel">
-        <h2>Effects — send / return routing</h2>
-        <div class="fxtabs" id="fxTabs">
-          <button class="fxtab active" data-tab="reverb">Reverb</button>
-          <button class="fxtab" data-tab="delay">Delay</button>
-          <button class="fxtab" data-tab="chorus">Chorus</button>
+        <div class="row" style="justify-content: space-between;">
+          <h2 style="margin:0;">Effects rack — dynamic stack &amp; send matrix</h2>
+          <span class="row" style="gap:6px;">
+            <select id="fxAddType" style="padding:4px 8px; font-size:13px;">
+              <option value="reverb">Reverb</option>
+              <option value="delay">Delay</option>
+              <option value="chorus">Chorus</option>
+            </select>
+            <button id="fxAdd" style="padding:4px 12px; font-size:13px;">+ Add effect</button>
+          </span>
         </div>
-
-        <div class="fxpanel active" data-panel="reverb">
-          <div class="fxglobals">
-            <label class="chk"><input type="checkbox" id="reverb" checked /> Enable</label>
-            <span class="grp">room <input type="range" id="reverbRoom" min="0" max="1" value="0.82" step="0.02" style="width:100px" /> <span class="time" id="reverbRoomVal">0.82</span></span>
-            <span class="grp">return <input type="range" id="reverbMix" min="0" max="1" value="0.25" step="0.05" style="width:100px" /> <span class="time" id="reverbMixVal">0.25</span></span>
-          </div>
-          <div class="fxsends" id="revSends"></div>
-        </div>
-
-        <div class="fxpanel" data-panel="delay">
-          <div class="fxglobals">
-            <label class="chk"><input type="checkbox" id="delay" /> Enable</label>
-            <span class="grp">time <input type="range" id="delayTime" min="0.05" max="1" value="0.32" step="0.01" style="width:100px" /> <span class="time" id="delayTimeVal">0.32</span></span>
-            <span class="grp">feedback <input type="range" id="delayFb" min="0" max="0.9" value="0.4" step="0.02" style="width:100px" /> <span class="time" id="delayFbVal">0.40</span></span>
-            <span class="grp">mix <input type="range" id="delayMix" min="0" max="1" value="0.35" step="0.05" style="width:100px" /> <span class="time" id="delayMixVal">0.35</span></span>
-          </div>
-          <div class="fxsends" id="delSends"></div>
-        </div>
-
-        <div class="fxpanel" data-panel="chorus">
-          <div class="fxglobals">
-            <label class="chk"><input type="checkbox" id="chorus" /> Enable</label>
-            <span class="grp">rate <input type="range" id="chorusRate" min="0.1" max="6" value="1.2" step="0.1" style="width:100px" /> <span class="time" id="chorusRateVal">1.2</span></span>
-            <span class="grp">depth <input type="range" id="chorusDepth" min="0" max="1" value="0.5" step="0.05" style="width:100px" /> <span class="time" id="chorusDepthVal">0.50</span></span>
-            <span class="grp">mix <input type="range" id="chorusMix" min="0" max="1" value="0.5" step="0.05" style="width:100px" /> <span class="time" id="chorusMixVal">0.50</span></span>
-          </div>
-          <div class="fxsends" id="choSends"></div>
-        </div>
+        <div id="fxRack"></div>
+        <h3 class="matrixTitle">Send matrix <span class="filelabel">— route each track (rows) to each effect instance (columns), 0…1</span></h3>
+        <div id="fxMatrix" class="fxmatrix-wrap"></div>
       </div>
 
       <div class="panel">

@@ -36,7 +36,7 @@ import { song as bundledSong } from "../songData.ts";
 import { GM_NAMES, gmVoice } from "../gm.ts";
 import { parseMidiBuffer } from "./browserMidi.ts";
 import type { Song, Note } from "../midiParse.ts";
-import { StreamingSynth, defaultChannelMix, PitchedVoice, MASTER_GAIN, type ChannelMix, type WebRenderOptions } from "./streamingSynth.ts";
+import { StreamingSynth, defaultChannelMix, PitchedVoice, MASTER_GAIN, type ChannelMix, type WebRenderOptions, type FxInstance, type FxType } from "./streamingSynth.ts";
 
 type EngineType = "additive" | "fm" | "sub" | "ks" | "formant";
 
@@ -65,6 +65,97 @@ const PRESETS: Preset[] = [
 interface SongConfig {
   voiceOverrides: Record<string, VoiceOverride>;
   mixer: Record<string, ChannelMix>;
+  fx?: FxInstance[]; // dynamic effects rack (absent in legacy configs -> migrated)
+}
+
+// ---- dynamic effects rack model ----
+// Per-type parameter metadata: drives both the rack UI knobs and the sanitizer.
+interface FxParamSpec { key: string; label: string; min: number; max: number; step: number; digits: number; }
+const FX_PARAM_SPECS: Record<FxType, FxParamSpec[]> = {
+  reverb: [
+    { key: "room", label: "room", min: 0, max: 1, step: 0.02, digits: 2 },
+    { key: "mix", label: "return", min: 0, max: 1, step: 0.05, digits: 2 },
+  ],
+  delay: [
+    { key: "time", label: "time", min: 0.05, max: 1, step: 0.01, digits: 2 },
+    { key: "feedback", label: "feedback", min: 0, max: 0.9, step: 0.02, digits: 2 },
+    { key: "mix", label: "mix", min: 0, max: 1, step: 0.05, digits: 2 },
+  ],
+  chorus: [
+    { key: "rate", label: "rate", min: 0.1, max: 6, step: 0.1, digits: 1 },
+    { key: "depth", label: "depth", min: 0, max: 1, step: 0.05, digits: 2 },
+    { key: "mix", label: "mix", min: 0, max: 1, step: 0.05, digits: 2 },
+  ],
+};
+const FX_DEFAULT_PARAMS: Record<FxType, Record<string, number>> = {
+  reverb: { room: 0.82, mix: 0.25 },
+  delay: { time: 0.32, feedback: 0.4, mix: 0.35 },
+  chorus: { rate: 1.2, depth: 0.5, mix: 0.5 },
+};
+const FX_TYPE_LABEL: Record<FxType, string> = { reverb: "Reverb", delay: "Delay", chorus: "Chorus" };
+
+// Stable ids for the default stack — legacy per-channel sends migrate onto these.
+const DEFAULT_REVERB_ID = "reverb-1";
+const DEFAULT_DELAY_ID = "delay-1";
+const DEFAULT_CHORUS_ID = "chorus-1";
+
+// The live effects rack (ordered). Persisted per song + in the .chip session.
+let fxStack: FxInstance[] = [];
+let fxIdSeq = 1;
+function newFxId(): string { return `fx-${Date.now().toString(36)}-${fxIdSeq++}`; }
+
+/** The default rack for a fresh song: reproduces the old fixed 3-effect setup. */
+function defaultFxStack(): FxInstance[] {
+  return [
+    { id: DEFAULT_REVERB_ID, type: "reverb", name: "Reverb", enabled: true, params: { ...FX_DEFAULT_PARAMS.reverb } },
+    { id: DEFAULT_DELAY_ID, type: "delay", name: "Delay", enabled: true, params: { ...FX_DEFAULT_PARAMS.delay } },
+    { id: DEFAULT_CHORUS_ID, type: "chorus", name: "Chorus", enabled: true, params: { ...FX_DEFAULT_PARAMS.chorus } },
+  ];
+}
+
+/** Coerce a (possibly hand-edited / legacy) FxInstance into a valid one. */
+function sanitizeFxInstance(raw: unknown): FxInstance | null {
+  const r = raw as Partial<FxInstance>;
+  if (!r || (r.type !== "reverb" && r.type !== "delay" && r.type !== "chorus")) return null;
+  const type = r.type as FxType;
+  const params: Record<string, number> = { ...FX_DEFAULT_PARAMS[type] };
+  const rp = (r.params ?? {}) as Record<string, unknown>;
+  for (const spec of FX_PARAM_SPECS[type]) {
+    const n = Number(rp[spec.key]);
+    if (Number.isFinite(n)) params[spec.key] = Math.min(Math.max(n, spec.min), spec.max);
+  }
+  return {
+    id: typeof r.id === "string" && r.id ? r.id : newFxId(),
+    type,
+    name: typeof r.name === "string" && r.name ? r.name : FX_TYPE_LABEL[type],
+    enabled: r.enabled !== false,
+    params,
+  };
+}
+
+/** Set fxStack from a loaded config (or the default if none/empty). */
+function setFxStack(loaded?: FxInstance[]): void {
+  if (Array.isArray(loaded) && loaded.length) {
+    const clean = loaded.map(sanitizeFxInstance).filter((f): f is FxInstance => f !== null);
+    fxStack = clean.length ? clean : defaultFxStack();
+  } else {
+    fxStack = defaultFxStack();
+  }
+}
+
+/** Migrate a channel mix's legacy fixed sends into the id-keyed matrix, in place. */
+function migrateMixSends(m: ChannelMix): void {
+  if (!m.sends || typeof m.sends !== "object") m.sends = {};
+  const legacy: [keyof ChannelMix, string][] = [
+    ["reverbSend", DEFAULT_REVERB_ID], ["delaySend", DEFAULT_DELAY_ID], ["chorusSend", DEFAULT_CHORUS_ID],
+  ];
+  for (const [field, id] of legacy) {
+    const v = m[field] as number | undefined;
+    if (v !== undefined && m.sends[id] === undefined) { const n = Number(v); if (Number.isFinite(n)) m.sends[id] = n; }
+    delete (m as Record<string, unknown>)[field as string];
+  }
+  // drop any non-finite send values
+  for (const k of Object.keys(m.sends)) { const n = Number(m.sends[k]); if (Number.isFinite(n)) m.sends[k] = n; else delete m.sends[k]; }
 }
 
 // ---- state ----
@@ -101,29 +192,10 @@ const els = {
   drums: $("drums") as HTMLInputElement,
   stereo: $("stereo") as HTMLInputElement,
   compress: $("compress") as HTMLInputElement,
-  reverb: $("reverb") as HTMLInputElement,
-  reverbRoom: $("reverbRoom") as HTMLInputElement,
-  reverbRoomVal: $("reverbRoomVal"),
-  reverbMix: $("reverbMix") as HTMLInputElement,
-  reverbMixVal: $("reverbMixVal"),
-  delay: $("delay") as HTMLInputElement,
-  delayTime: $("delayTime") as HTMLInputElement,
-  delayTimeVal: $("delayTimeVal"),
-  delayFb: $("delayFb") as HTMLInputElement,
-  delayFbVal: $("delayFbVal"),
-  delayMix: $("delayMix") as HTMLInputElement,
-  delayMixVal: $("delayMixVal"),
-  chorus: $("chorus") as HTMLInputElement,
-  chorusRate: $("chorusRate") as HTMLInputElement,
-  chorusRateVal: $("chorusRateVal"),
-  chorusDepth: $("chorusDepth") as HTMLInputElement,
-  chorusDepthVal: $("chorusDepthVal"),
-  chorusMix: $("chorusMix") as HTMLInputElement,
-  chorusMixVal: $("chorusMixVal"),
-  fxTabs: $("fxTabs"),
-  revSends: $("revSends"),
-  delSends: $("delSends"),
-  choSends: $("choSends"),
+  fxRack: $("fxRack"),
+  fxMatrix: $("fxMatrix"),
+  fxAdd: $("fxAdd") as HTMLButtonElement,
+  fxAddType: $("fxAddType") as HTMLSelectElement,
   voice: $("voice") as HTMLSelectElement,
   voiceRow: $("voiceRow"),
   status: $("status"),
@@ -171,9 +243,7 @@ function buildOptions(): WebRenderOptions {
     formant: preset.timbre.formant,
     gm,
     drums: els.drums.checked,
-    reverb: els.reverb.checked ? { room: Number(els.reverbRoom.value), mix: Number(els.reverbMix.value) } : undefined,
-    delay: els.delay.checked ? { time: Number(els.delayTime.value), feedback: Number(els.delayFb.value), mix: Number(els.delayMix.value) } : undefined,
-    chorus: els.chorus.checked ? { rate: Number(els.chorusRate.value), depth: Number(els.chorusDepth.value), mix: Number(els.chorusMix.value) } : undefined,
+    fx: fxStack,
     compress: els.compress.checked ? { threshold: -18, ratio: 3, attack: 0.005, release: 0.12 } : undefined,
     voiceOverrides,
   };
@@ -220,7 +290,10 @@ function channelsOf(s: Song): ChanInfo[] {
 const REVERB_SEED_SCALE = 0.3;
 function newChannelMix(c: ChanInfo): ChannelMix {
   const m = defaultChannelMix();
-  m.reverbSend = c.isDrum ? 0 : (song.reverb?.[c.key] ?? 0) * REVERB_SEED_SCALE;
+  // Seed the first reverb instance's send from the MIDI's own CC91 depth (never
+  // drums). The user's per-cell matrix slider still spans the full 0..1.
+  const revId = fxStack.find((f) => f.type === "reverb")?.id;
+  if (revId && !c.isDrum) m.sends[revId] = (song.reverb?.[c.key] ?? 0) * REVERB_SEED_SCALE;
   return m;
 }
 
@@ -238,7 +311,7 @@ function songHash(s: Song, name: string): string {
 const cfgKey = (id: string) => `chiptune:cfg:${id}`;
 
 function saveConfig(): void {
-  const cfg: SongConfig = { voiceOverrides, mixer: Object.fromEntries(mixer) };
+  const cfg: SongConfig = { voiceOverrides, mixer: Object.fromEntries(mixer), fx: fxStack };
   try {
     localStorage.setItem(cfgKey(songId), JSON.stringify(cfg));
     els.cfgStatus.textContent = `Saved for “${songId}”`;
@@ -258,7 +331,13 @@ function sanitizeConfig(cfg: SongConfig): SongConfig {
   for (const m of Object.values(cfg.mixer ?? {})) {
     const rec = m as Record<string, unknown>;
     for (const f of ["volume", "reverbSend", "delaySend", "chorusSend"]) {
+      if (rec[f] === undefined) continue;
       const n = Number(rec[f]); if (Number.isFinite(n)) rec[f] = n; else delete rec[f];
+    }
+    // coerce the send matrix's values back to finite numbers
+    const sends = rec.sends as Record<string, unknown> | undefined;
+    if (sends && typeof sends === "object") {
+      for (const k of Object.keys(sends)) { const n = Number(sends[k]); if (Number.isFinite(n)) sends[k] = n; else delete sends[k]; }
     }
   }
   return cfg;
@@ -268,15 +347,22 @@ function loadConfig(): boolean {
   for (const k of Object.keys(voiceOverrides)) delete voiceOverrides[k];
   mixer.clear();
   let loaded = false;
+  let loadedFx: FxInstance[] | undefined;
   try {
     const raw = localStorage.getItem(cfgKey(songId));
     if (raw) {
       const cfg = sanitizeConfig(JSON.parse(raw) as SongConfig);
       Object.assign(voiceOverrides, cfg.voiceOverrides ?? {});
+      loadedFx = cfg.fx;
       for (const [k, v] of Object.entries(cfg.mixer ?? {})) mixer.set(k, { ...defaultChannelMix(), ...v });
       loaded = true;
     }
   } catch { /* corrupt — fall through to defaults */ }
+  // resolve the effects rack (default stack if none saved) BEFORE seeding new
+  // channels, so their reverb send targets the right instance id
+  setFxStack(loadedFx);
+  // migrate every loaded strip's legacy fixed sends into the id-keyed matrix
+  for (const m of mixer.values()) migrateMixSends(m);
   // ensure every channel present in the song has a mixer strip
   for (const c of channelsOf(song)) if (!mixer.has(c.key)) mixer.set(c.key, newChannelMix(c));
   return loaded;
@@ -500,46 +586,118 @@ function buildEditor(): void {
     const sel = els.tracks.querySelector<HTMLSelectElement>(`select[data-k="${c.key}"][data-f="program"]`);
     if (sel) sel.value = String(voiceOverrides[c.key]?.program ?? c.program);
   }
-  buildEffectSends(chans);
+  buildFxRack();
+  buildSendMatrix(chans);
 }
 
-// ---- per-channel effect send routing (one compact slider list per effect tab) ----
-function buildEffectSends(chans: ChanInfo[]): void {
-  const specs: { field: "reverbSend" | "delaySend" | "chorusSend"; container: HTMLElement; prefix: string }[] = [
-    { field: "reverbSend", container: els.revSends, prefix: "sRev" },
-    { field: "delaySend", container: els.delSends, prefix: "sDel" },
-    { field: "chorusSend", container: els.choSends, prefix: "sCho" },
-  ];
-  for (const { field, container, prefix } of specs) {
-    container.innerHTML = chans.map((c) => {
-      const m = mixer.get(c.key)!;
-      const val = Number(m[field] ?? 0);
-      const label = `T${c.track}·Ch${c.channel + 1}${c.isDrum ? " (drum)" : ""}`;
-      return `<div class="fxsend">
-        <label title="${label}">${label}</label>
-        <input type="range" data-fx="${field}" data-k="${c.key}" min="0" max="1" step="0.05" value="${val}"/>
-        <span class="cellval" id="${prefix}-${c.key}">${val.toFixed(2)}</span>
+// ---- dynamic effects rack UI ----
+const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
+
+/** Render the rack: one card per FX instance (enable, name, params, remove). */
+function buildFxRack(): void {
+  if (!fxStack.length) {
+    els.fxRack.innerHTML = `<span class="filelabel">No effects. Add one above.</span>`;
+    return;
+  }
+  els.fxRack.innerHTML = fxStack.map((f) => {
+    const params = FX_PARAM_SPECS[f.type].map((sp) => {
+      const val = Number(f.params[sp.key] ?? FX_DEFAULT_PARAMS[f.type][sp.key]);
+      return `<div class="fxparam">
+        <label>${sp.label}</label>
+        <input type="range" data-fxid="${f.id}" data-p="${sp.key}" min="${sp.min}" max="${sp.max}" step="${sp.step}" value="${val}"/>
+        <span class="cellval" id="fxp-${f.id}-${sp.key}">${val.toFixed(sp.digits)}</span>
       </div>`;
     }).join("");
-  }
+    return `<div class="fxcard${f.enabled ? "" : " disabled"}" data-fxid="${f.id}">
+      <div class="fxhead">
+        <label class="chk"><input type="checkbox" data-fxid="${f.id}" data-fxen="1" ${f.enabled ? "checked" : ""}/> on</label>
+        <input class="fxname" type="text" data-fxid="${f.id}" data-fxnm="1" value="${esc(f.name)}" title="rename"/>
+        <span class="fxtype">${FX_TYPE_LABEL[f.type]}</span>
+        <button class="fxrm" data-fxid="${f.id}" data-fxrm="1">Remove</button>
+      </div>
+      <div class="fxparams">${params}</div>
+    </div>`;
+  }).join("");
 }
 
-// live-update a per-channel send from the effect tab sliders
-function fxSendInput(t: HTMLInputElement): void {
-  const key = t.dataset.k, field = t.dataset.fx as "reverbSend" | "delaySend" | "chorusSend" | undefined;
-  if (!key || !field) return;
-  const val = Number(t.value);
+/** Render the send matrix: rows = channels, columns = FX instances. */
+function buildSendMatrix(chans: ChanInfo[]): void {
+  if (!fxStack.length) { els.fxMatrix.innerHTML = `<span class="filelabel">Add an effect to route sends.</span>`; return; }
+  const head = fxStack.map((f) => `<th class="colhdr${f.enabled ? "" : " disabled"}" title="${esc(f.name)}">${esc(f.name)}</th>`).join("");
+  const rows = chans.map((c) => {
+    const m = mixer.get(c.key)!;
+    const label = `T${c.track}·Ch${c.channel + 1}${c.isDrum ? " (drum)" : ""}`;
+    const cells = fxStack.map((f) => {
+      const val = Number(m.sends[f.id] ?? 0);
+      return `<td><div class="mcell">
+        <input type="range" data-mx="1" data-k="${c.key}" data-fxid="${f.id}" min="0" max="1" step="0.05" value="${val}"/>
+        <span class="cellval" id="mx-${c.key}-${f.id}">${val.toFixed(2)}</span>
+      </div></td>`;
+    }).join("");
+    return `<tr><td class="rowhdr" title="${label}">${label}</td>${cells}</tr>`;
+  });
+  els.fxMatrix.innerHTML = `<table><thead><tr><th class="rowhdr">Track</th>${head}</tr></thead><tbody>${rows.join("")}</tbody></table>`;
+}
+
+// add / remove effect instances
+els.fxAdd.addEventListener("click", () => {
+  const type = els.fxAddType.value as FxType;
+  const n = fxStack.filter((f) => f.type === type).length + 1;
+  fxStack.push({ id: newFxId(), type, name: `${FX_TYPE_LABEL[type]} ${n}`, enabled: true, params: { ...FX_DEFAULT_PARAMS[type] } });
+  buildFxRack();
+  buildSendMatrix(chanInfos);
+  applyOptions();
+  saveConfig();
+});
+
+// rack: enable toggle / rename / remove / param sliders (delegated)
+els.fxRack.addEventListener("input", (e) => {
+  const t = e.target as HTMLInputElement;
+  const id = t.dataset.fxid;
+  if (!id) return;
+  const f = fxStack.find((x) => x.id === id);
+  if (!f) return;
+  if (t.dataset.fxen === "1") {
+    f.enabled = t.checked;
+    t.closest(".fxcard")?.classList.toggle("disabled", !f.enabled);
+    buildSendMatrix(chanInfos); // refresh the column header's enabled/dim state
+  } else if (t.dataset.fxnm === "1") {
+    f.name = t.value;
+  } else if (t.dataset.p) {
+    const val = Number(t.value);
+    f.params[t.dataset.p] = val;
+    const sp = FX_PARAM_SPECS[f.type].find((s) => s.key === t.dataset.p);
+    const out = document.getElementById(`fxp-${id}-${t.dataset.p}`);
+    if (out && sp) out.textContent = val.toFixed(sp.digits);
+  }
+  applyOptions();
+  saveConfig();
+});
+els.fxRack.addEventListener("click", (e) => {
+  const b = (e.target as HTMLElement).closest("button[data-fxrm]") as HTMLElement | null;
+  if (!b) return;
+  const id = b.dataset.fxid!;
+  fxStack = fxStack.filter((f) => f.id !== id);
+  for (const m of mixer.values()) delete m.sends[id]; // drop the removed column's sends
+  buildFxRack();
+  buildSendMatrix(chanInfos);
+  applyOptions();
+  saveConfig();
+});
+
+// send matrix cell -> update that channel's send to that FX instance (delegated)
+els.fxMatrix.addEventListener("input", (e) => {
+  const t = e.target as HTMLInputElement;
+  if (t.dataset.mx !== "1") return;
+  const key = t.dataset.k!, id = t.dataset.fxid!;
   const m = mixer.get(key);
   if (!m) return;
-  m[field] = val;
-  const prefix = field === "reverbSend" ? "sRev" : field === "delaySend" ? "sDel" : "sCho";
-  const out = document.getElementById(`${prefix}-${key}`);
+  const val = Number(t.value);
+  if (val > 0) m.sends[id] = val; else delete m.sends[id];
+  const out = document.getElementById(`mx-${key}-${id}`);
   if (out) out.textContent = val.toFixed(2);
   saveConfig();
-}
-els.revSends.addEventListener("input", (e) => fxSendInput(e.target as HTMLInputElement));
-els.delSends.addEventListener("input", (e) => fxSendInput(e.target as HTMLInputElement));
-els.choSends.addEventListener("input", (e) => fxSendInput(e.target as HTMLInputElement));
+});
 
 function ov(key: string): VoiceOverride {
   return (voiceOverrides[key] ??= {});
@@ -1069,7 +1227,9 @@ function openSong(newSong: Song, name: string, preset?: SongConfig): void {
     for (const k of Object.keys(voiceOverrides)) delete voiceOverrides[k];
     mixer.clear();
     Object.assign(voiceOverrides, preset.voiceOverrides ?? {});
+    setFxStack(preset.fx); // rack from the project (or default), before seeding channels
     for (const [k, v] of Object.entries(preset.mixer ?? {})) mixer.set(k, { ...defaultChannelMix(), ...v });
+    for (const m of mixer.values()) migrateMixSends(m); // migrate legacy sends
     for (const c of channelsOf(song)) if (!mixer.has(c.key)) mixer.set(c.key, newChannelMix(c));
     saveConfig(); // persist the loaded project under its song id
     had = true;
@@ -1118,6 +1278,7 @@ function resetToDefaults(): void {
   try { localStorage.removeItem(cfgKey(songId)); } catch {}
   for (const k of Object.keys(voiceOverrides)) delete voiceOverrides[k];
   mixer.clear();
+  setFxStack(undefined); // fresh default rack
   for (const c of channelsOf(song)) mixer.set(c.key, newChannelMix(c));
   if (synth) synth.setMixer(mixer);
   applyOptions();
@@ -1163,32 +1324,12 @@ els.roll.addEventListener("mousedown", (ev) => {
   window.addEventListener("mouseup", up);
 });
 
-for (const ctl of [els.gm, els.drums, els.stereo, els.compress, els.reverb, els.delay, els.chorus, els.voice]) {
+for (const ctl of [els.gm, els.drums, els.stereo, els.compress, els.voice]) {
   ctl.addEventListener("change", () => {
     if (ctl === els.gm) els.voiceRow.style.display = els.gm.checked ? "none" : "flex";
     applyOptions();
   });
 }
-// effect tab switching (show/hide the panel for the clicked tab)
-els.fxTabs.addEventListener("click", (e) => {
-  const b = (e.target as HTMLElement).closest(".fxtab") as HTMLElement | null;
-  if (!b) return;
-  const tab = b.dataset.tab;
-  for (const t of els.fxTabs.querySelectorAll(".fxtab")) t.classList.toggle("active", (t as HTMLElement).dataset.tab === tab);
-  for (const p of document.querySelectorAll(".fxpanel")) p.classList.toggle("active", (p as HTMLElement).dataset.panel === tab);
-});
-// global effect parameter sliders: update the readout, then push options live
-const fxParam = (input: HTMLInputElement, out: HTMLElement, digits = 2) => {
-  input.addEventListener("input", () => { out.textContent = Number(input.value).toFixed(digits); applyOptions(); });
-};
-fxParam(els.reverbRoom, els.reverbRoomVal);
-fxParam(els.reverbMix, els.reverbMixVal);
-fxParam(els.delayTime, els.delayTimeVal);
-fxParam(els.delayFb, els.delayFbVal);
-fxParam(els.delayMix, els.delayMixVal);
-fxParam(els.chorusRate, els.chorusRateVal, 1);
-fxParam(els.chorusDepth, els.chorusDepthVal);
-fxParam(els.chorusMix, els.chorusMixVal);
 els.resetCfg.addEventListener("click", resetToDefaults);
 els.saveCfg.addEventListener("click", () => { saveConfig(); els.cfgStatus.textContent = `Saved “${songId}” ✓`; });
 
@@ -1217,6 +1358,7 @@ interface Session {
   song: Song;
   voiceOverrides: Record<string, VoiceOverride>;
   mixer: Record<string, ChannelMix>;
+  fx?: FxInstance[]; // dynamic effects rack (absent in legacy .chip -> migrated)
 }
 
 els.saveProject.addEventListener("click", () => {
@@ -1227,6 +1369,7 @@ els.saveProject.addEventListener("click", () => {
     song,
     voiceOverrides,
     mixer: Object.fromEntries(mixer),
+    fx: fxStack,
   };
   const blob = new Blob([JSON.stringify(session)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
@@ -1250,6 +1393,7 @@ els.projectFile.addEventListener("change", async () => {
     openSong(session.song, session.songName || f.name, {
       voiceOverrides: session.voiceOverrides ?? {},
       mixer: session.mixer ?? {},
+      fx: session.fx,
     });
     els.status.textContent = `Loaded project ${f.name} — ${song.notes.length} notes, ${song.duration.toFixed(1)}s`;
   } catch (e) {
@@ -1286,8 +1430,6 @@ els.projectFile.addEventListener("change", async () => {
   resumeCtx() { return ctx ? ctx.resume() : Promise.resolve(); },
 };
 els.voiceRow.style.display = els.gm.checked ? "none" : "flex";
-els.reverbMixVal.textContent = Number(els.reverbMix.value).toFixed(2);
-els.delayMixVal.textContent = Number(els.delayMix.value).toFixed(2);
 buildPiano();
 updateOctLabel();
 initMidi();
