@@ -953,8 +953,8 @@ window.addEventListener("keydown", (e) => {
       case "End": e.preventDefault(); seekTo(song.duration); return;
       case "ArrowLeft": e.preventDefault(); seekTo(t - 5); return;
       case "ArrowRight": e.preventDefault(); seekTo(t + 5); return;
-      case "PageUp": e.preventDefault(); seekTo(t + 20); return;
-      case "PageDown": e.preventDefault(); seekTo(t - 20); return;
+      case "PageUp": e.preventDefault(); seekTo(t - 20); return;
+      case "PageDown": e.preventDefault(); seekTo(t + 20); return;
       // octave shift for both the on-screen piano and the computer keys
       case "-": case "_": e.preventDefault(); setOctaveShift(octaveShift - 1); return;
       case "=": case "+": e.preventDefault(); setOctaveShift(octaveShift + 1); return;
@@ -1127,6 +1127,8 @@ els.file.addEventListener("change", async () => {
     openSong(s, `${f.name} — ${s.notes.length} notes, ${s.duration.toFixed(1)}s @ ${s.tempoBpm} bpm`);
   } catch (e) {
     els.status.textContent = `Failed to parse MIDI: ${(e as Error).message}`;
+  } finally {
+    els.file.blur(); // move focus off the file input so the window spacebar handler plays it
   }
 });
 
@@ -1179,6 +1181,7 @@ els.projectFile.addEventListener("change", async () => {
     els.status.textContent = `Failed to load project: ${(e as Error).message}`;
   } finally {
     els.projectFile.value = "";
+    els.projectFile.blur(); // let the window spacebar handler play instead of staying trapped on the input
   }
 });
 
