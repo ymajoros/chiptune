@@ -744,7 +744,14 @@ const held = new Set<string>();
 window.addEventListener("keydown", (e) => {
   if (e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
   const tag = (e.target as HTMLElement).tagName;
-  if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+  const inField = tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA";
+  // spacebar = play/stop (unless typing in a field, where space is a space)
+  if (e.key === " " && !inField) {
+    e.preventDefault();
+    togglePlay();
+    return;
+  }
+  if (inField) return;
   const p = KEYMAP[e.key.toLowerCase()];
   if (p === undefined || held.has(e.key)) return;
   held.add(e.key);
@@ -790,6 +797,9 @@ function openSong(newSong: Song, name: string, preset?: SongConfig): void {
   } else {
     had = loadConfig();
   }
+  // solo/mute are transient performance state — never carry them across a load,
+  // or a persisted solo silences everything else and looks broken on refresh.
+  for (const m of mixer.values()) { m.solo = false; m.mute = false; }
   synth = new StreamingSynth(song, buildOptions());
   synth.setMixer(mixer);
   els.seek.max = String(song.duration);

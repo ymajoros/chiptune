@@ -89,6 +89,9 @@ const OVERRIDE: Record<number, Voice> = {
   99: { attack: 0.35, release: 0.6, gain: 0.6, sub: sub("saw", 700, 0.12, 500, 2.0, 22, 5) },
   // Clean Guitar — warmer, less "synthy": a Karplus string with more damping
   // (darker, less metallic) and a touch more sustain than the bright default.
+  // Steel Guitar — steel strings ring longer and brighter than the default
+  // pluck; a soft attack rounds off the abrupt KS onset that read as mechanical.
+  25: { attack: 0.006, release: 0.18, gain: 0.9, ks: ks(0.9975, 0.5) },
   27: { attack: 0.004, release: 0.12, gain: 0.9, ks: ks(0.9955, 0.62) },
   80: { attack: 0.005, release: 0.06, gain: 0.8, sub: sub("square", 2200, 0.3, 1400, 0.3, 4, 2) }, // Square Lead
 };
