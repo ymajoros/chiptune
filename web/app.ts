@@ -535,7 +535,7 @@ function renderInstrumentEditor(): void {
   const common = `<div class="grid">
     ${NUM("Attack (ms)", key, "attack", "", Math.round((voice.attack ?? 0.005) * 1000), 0, 500, 1)}
     ${NUM("Release (ms)", key, "release", "", Math.round((voice.release ?? 0.03) * 1000), 0, 1000, 1)}
-    ${NUM("Gain", key, "gain", "", +(voice.gain ?? 1).toFixed(2), 0.1, 2, 0.05)}
+    ${NUM("Gain", key, "gain", "", +(voice.gain ?? 1).toFixed(2), 0.1, 3, 0.05)}
     ${NUM("Fold above (0=off)", key, "foldAbove", "", voice.foldAbove ?? 0, 0, 108, 1)}
   </div>`;
 

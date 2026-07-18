@@ -101,6 +101,13 @@ function clampFinite(x: number): number {
   return Number.isFinite(x) ? (x > 16 ? 16 : x < -16 ? -16 : x) : 0;
 }
 
+/** A patch gain that can never poison the signal: `NaN ?? 1` is NaN (?? only
+ *  catches null/undefined), and a NaN gain makes every sample NaN. Force finite
+ *  and non-negative, defaulting to 1. */
+function safeGain(g: number | undefined): number {
+  return Number.isFinite(g) && (g as number) >= 0 ? (g as number) : 1;
+}
+
 /** Which engine a Voice selects (matches the constructor's branch order). */
 function voiceEngine(v: Voice): "add" | "fm" | "sub" | "formant" | "ks" {
   if (v.ks) return "ks";
@@ -149,7 +156,7 @@ class PitchedVoice implements RtVoice {
     if (v.foldAbove) while (pitch > v.foldAbove) pitch -= 12;
     const freq = midiToHz(pitch);
     this.inc0 = freq / SR;
-    this.amp = (note.velocity / 127) ** 1.5 * 0.25 * (v.gain ?? 1);
+    this.amp = (note.velocity / 127) ** 1.5 * 0.25 * safeGain(v.gain);
 
     if (v.ks) {
       this.engine = "ks";
@@ -215,7 +222,7 @@ class PitchedVoice implements RtVoice {
     this.v = v; // fm/sub/etc. params are read from this.v every block -> live
     this.a = Math.min(Math.floor(v.attack * SR), this.n >> 1);
     this.r = Math.min(Math.floor(v.release * SR), this.n >> 1);
-    this.amp = (this.note.velocity / 127) ** 1.5 * 0.25 * (v.gain ?? 1);
+    this.amp = (this.note.velocity / 127) ** 1.5 * 0.25 * safeGain(v.gain);
   }
 
   render(scratch: Float32Array, start: number, count: number): void {
@@ -383,7 +390,14 @@ export function renderAudition(
     if (v.done) break;
   }
   new Compressor(LIMITER).processMono(out);
-  for (let i = 0; i < out.length; i++) { if (out[i] > 1) out[i] = 1; else if (out[i] < -1) out[i] = -1; }
+  // Sanitize before this buffer reaches Web Audio. A single NaN/Inf sample fed to
+  // ctx.destination poisons the ENTIRE AudioContext permanently (total silence
+  // until page refresh) — and `x > 1` is false for NaN, so a bare clamp lets it
+  // through. Map non-finite -> 0, then clamp finite to [-1, 1].
+  for (let i = 0; i < out.length; i++) {
+    const x = out[i];
+    out[i] = !Number.isFinite(x) ? 0 : x > 1 ? 1 : x < -1 ? -1 : x;
+  }
   return out;
 }
 
