@@ -200,17 +200,22 @@ export function renderDrum(note: number, velocity: number): Float32Array {
       // snappy, not a long wash: keep the noise tail brief (fast decay), narrow
       // the wire band so it cracks rather than hisses, and add a sharp stick
       // transient at the very start so it reads as a hit.
+      // A real snare is NOISE-forward: the wire crack dominates, the tuned head is
+      // just a brief thock. The old mix was body-dominated (a low tonal sine at
+      // 0.5 amp with a 55ms decay >> the narrow band-passed noise), so it read as a
+      // pitched "boing"/tom, not a snare. Cut the body right down + shorten it, and
+      // make the wires the main event: a WIDER band (cracks, doesn't ring) plus a
+      // broadband bright "air" burst through the first ~20ms.
       const n = secs(0.13);
-      const body = thump(n, 340, 190, 0.03, 0.055, 0);
-      const bp = makeBP(2400, 1.4);
-      const hp = makeHP(0.4);
-      const snapN = secs(0.006);
+      const body = thump(n, 300, 185, 0.02, 0.03, 0);
+      const bp = makeBP(2500, 0.8); // wider wire band -> crack, not a tonal ring
+      const hp = makeHP(0.28);      // broadband bright noise (wires + air)
       buf = new Float32Array(n);
       for (let k = 0; k < n; k++) {
         const t = k / SR;
-        const wire = bp(rnd()) * Math.exp(-t / 0.036); // fast-decaying buzz
-        const snap = k < snapN ? hp(rnd()) * (1 - k / snapN) : 0; // stick attack
-        buf[k] = 0.5 * body[k] + 0.75 * wire + 0.45 * snap;
+        const wire = bp(rnd()) * Math.exp(-t / 0.045); // band-passed buzz
+        const air = hp(rnd()) * Math.exp(-t / 0.02);   // broadband crack, ~20ms
+        buf[k] = 0.22 * body[k] + 0.7 * wire + 0.62 * air;
       }
       gain = 1.0;
       break;

@@ -21,6 +21,15 @@ import { renderDrum } from "./drums.ts";
 const SR = 44100; // sample rate
 const DROP_DRUMS = true; // channel 9 = GM percussion; sine drums sound bad
 
+// Per-engine loudness makeup — levels the engines so a preset's `gain` is a
+// relative trim, not an engine-dependent one. A subtractive saw loses energy
+// through its low-pass and a formant voice through three narrow band-passes, so
+// both read far quieter than FM/additive at the same gain; KS plucks read quiet
+// on RMS. Shared with the streaming twin (streamingSynth.ts imports this) so the
+// two engines stay in sync. (Unison voice-count loudness is handled separately by
+// the 1/sqrt(nv) sum in renderSub/renderFormant.)
+export const ENGINE_MAKEUP = { add: 1, fm: 1, sub: 1.3, formant: 5, ks: 1.5 } as const;
+
 const midiToHz = (pitch: number): number => 440 * 2 ** ((pitch - 69) / 12);
 
 /** A harmonic partial: sine at `multiple`x the fundamental, at `amp` gain. */
@@ -300,10 +309,16 @@ function vibFactor(vib: Vibrato | undefined, k: number): number {
 }
 
 /** Linear attack/release window so summed sines don't click. */
+/** Envelope length in samples, clamped to half the note; guards non-finite/negative
+ *  input and uses /2 (not a 32-bit `>> 1`, which overflows on very long buffers). */
+function envLen(sec: number, n: number): number {
+  const s = Number.isFinite(sec) ? Math.max(0, sec) : 0;
+  return Math.min(Math.floor(s * SR), Math.floor(n / 2));
+}
 function applyEnvelope(tone: Float32Array, attack: number, release: number): void {
   const n = tone.length;
-  const a = Math.min(Math.floor(attack * SR), n >> 1);
-  const r = Math.min(Math.floor(release * SR), n >> 1);
+  const a = envLen(attack, n);
+  const r = envLen(release, n);
   for (let k = 0; k < a; k++) tone[k] *= k / a;
   for (let k = 0; k < r; k++) tone[n - 1 - k] *= k / r;
 }
@@ -356,7 +371,7 @@ function renderSub(
       if (ph >= 1) ph -= 1;
       phases[v] = ph;
     }
-    s /= nv;
+    s /= Math.sqrt(nv); // energy-preserving unison sum (detuned voices are decorrelated; 1/nv would drop ~sqrt(nv) of loudness)
 
     // --- distortion: tanh soft-clip BEFORE the filter, like a guitar amp
     // (preamp overdrive -> the filter then acts as the speaker cabinet, taming
@@ -426,7 +441,7 @@ function renderFormant(
       if (ph >= 1) ph -= 1;
       phases[v] = ph;
     }
-    s /= nv;
+    s /= Math.sqrt(nv); // energy-preserving unison sum (detuned voices are decorrelated; 1/nv would drop ~sqrt(nv) of loudness)
     // lip-radiation pre-emphasis (see FORMANT_PREEMPH): +6 dB/oct tilt so the
     // upper formants speak and the vowel reads bright/present, not dark/low.
     { const d = s - FORMANT_PREEMPH * prevS; prevS = s; s = d * FORMANT_PREEMPH_MAKEUP; }
@@ -759,9 +774,12 @@ function renderTone(
 ): Float32Array {
   const inc0 = freq / SR;
   const tone = new Float32Array(n);
+  // level the engines (mirrors the streaming twin) so quiet subtractive/formant/KS
+  // voices match FM/additive at the same `gain`.
+  amp *= v.ks ? ENGINE_MAKEUP.ks : v.formant ? ENGINE_MAKEUP.formant : v.sub ? ENGINE_MAKEUP.sub : v.fm ? ENGINE_MAKEUP.fm : ENGINE_MAKEUP.add;
   if (v.ks) {
     // release window matches applyEnvelope's, so KS release-damping lines up with the fade
-    const rel = Math.min(Math.floor(v.release * SR), n >> 1);
+    const rel = envLen(v.release, n);
     renderKs(tone, v.ks, freq, amp, vel, rel);
   } else if (v.formant) {
     renderFormant(tone, v.formant, freq, amp, vibrato);

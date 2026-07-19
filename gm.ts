@@ -47,20 +47,28 @@ const FAMILY: Voice[] = [
   { attack: 0.003, release: 0.08, gain: 0.95, ks: ks(0.996, 1.0) },
   // 4  Bass — low filtered saw, quick filter env
   { attack: 0.005, release: 0.06, gain: 1.1, sub: sub("saw", 500, 0.3, 900, 0.12, 0, 1) },
-  // 5  Strings — bowed: unison saw through a slow filter
-  { attack: 0.06, release: 0.15, gain: 0.7, sub: sub("saw", 1500, 0.12, 1000, 0.6, 12, 4) },
-  // 6  Ensemble — thicker unison strings / pad
-  { attack: 0.08, release: 0.2, gain: 0.6, sub: sub("saw", 1300, 0.1, 900, 0.8, 16, 5) },
-  // 7  Brass — FM with a bright attack that stays present
-  { attack: 0.02, release: 0.08, gain: 0.85, fm: fm(1, 5, 0.3, 0.6) },
-  // 8  Reed — steady, hollow (mostly odd harmonics)
-  { attack: 0.03, release: 0.08, gain: 0.75, fm: fm(1, 3, 0.2, 0.75) },
-  // 9  Pipe — near sine (flute), a touch of 2nd harmonic
-  { attack: 0.04, release: 0.08, gain: 0.7, harmonics: [{ multiple: 2, amp: 0.08 }] },
+  // 5  Strings — bowed: unison saw through a slow filter. (gain raised: the low
+  //     cutoff sheds a lot of the saw's energy, so a bowed string reads quiet.)
+  { attack: 0.06, release: 0.15, gain: 1.35, sub: sub("saw", 1500, 0.12, 1000, 0.6, 12, 4) },
+  // 6  Ensemble — thicker unison strings / pad (gain raised, same reason as strings)
+  { attack: 0.08, release: 0.2, gain: 1.3, sub: sub("saw", 1300, 0.1, 900, 0.8, 16, 5) },
+  // 7  Brass — analog "brass" patch: a sawtooth through a resonant low-pass whose
+  //     cutoff BLOOMS on the attack (fc = cutoff + envAmount·e^-t) then settles to
+  //     a warm body, with a touch of drive for the buzzy edge and 2 detuned voices
+  //     for section width. Far warmer/more brass-like than the old cheesy high-index
+  //     FM. (envAmount is the bloom depth; resonance sets the ~1.5 kHz brass formant.)
+  { attack: 0.02, release: 0.09, gain: 0.95, sub: sub("saw", 1250, 0.34, 2200, 0.08, 7, 2, 1.35) },
+  // 8  Reed — sax/oboe: a reedier filtered saw with a stronger resonant formant (the
+  //     nasal "honk") and a gentler bloom than brass. (Clarinet is an odd-harmonic
+  //     additive override; flutes are family 9.)
+  { attack: 0.03, release: 0.09, gain: 0.9, sub: sub("saw", 1050, 0.44, 1500, 0.13, 5, 2, 1.18) },
+  // 9  Pipe — near sine (flute), a touch of 2nd/3rd harmonic. Gain raised: a
+  //     near-sine has little RMS for its peak, so it read far too quiet.
+  { attack: 0.04, release: 0.08, gain: 1.25, harmonics: [{ multiple: 2, amp: 0.12 }, { multiple: 3, amp: 0.05 }] },
   // 10 Synth lead — bright saw lead
   { attack: 0.005, release: 0.06, gain: 0.85, sub: sub("saw", 2200, 0.35, 1500, 0.3, 6, 2) },
-  // 11 Synth pad — slow, wide, dark
-  { attack: 0.2, release: 0.3, gain: 0.6, sub: sub("saw", 900, 0.15, 700, 1.2, 18, 5) },
+  // 11 Synth pad — slow, wide, dark (gain raised: dark low-cutoff pad reads quiet)
+  { attack: 0.2, release: 0.3, gain: 1.2, sub: sub("saw", 900, 0.15, 700, 1.2, 18, 5) },
   // 12 Synth effects — evolving FM
   { attack: 0.1, release: 0.2, gain: 0.6, fm: fm(2.5, 5, 1.5, 0.4) },
   // 13 Ethnic — plucked (sitar/banjo/koto), brighter string. (damping doubled
@@ -74,7 +82,12 @@ const FAMILY: Voice[] = [
 
 /** Per-program overrides where the family default misses badly. */
 const OVERRIDE: Record<number, Voice> = {
-  0: { attack: 0.002, release: 0.2, gain: 0.82, ks: ks(0.9968, 0.84, 0.3, 0.42, 0, 0.5, { strings: 3, spread: 3.5, velBright: 0.45, pluckNoise: 0.05 }) }, // Acoustic Grand — 3 slightly-detuned strings (unison beating/chorus), harder = brighter, felt-hammer tick (damping 0.42->0.84 preserves tone after the mapping fix)
+  // Acoustic Grand — a fuller, more resonant piano: 3 slightly-detuned unison
+  // strings (beating/chorus) with a bigger soundboard body, harder=brighter,
+  // felt-hammer tick, PLUS a sympathetic-string bank tuned to octaves & fifths
+  // across the range — the undamped strings of a real piano ring in sympathy with
+  // whatever you play, which is most of what makes an acoustic grand sound alive.
+  0: { attack: 0.002, release: 0.3, gain: 0.85, ks: ks(0.9972, 0.82, 0.46, 0.42, 0, 0.52, { strings: 3, spread: 4, velBright: 0.5, pluckNoise: 0.06 }), sympathetic: symp([24, 31, 36, 43, 48, 55, 60, 67, 72, 79], 0.8, 0.3, 0.26) },
   16: { attack: 0.012, release: 0.05, gain: 1.0, foldAbove: 81, harmonics: [{ multiple: 2, amp: 0.7 }, { multiple: 3, amp: 0.4 }, { multiple: 4, amp: 0.5 }, { multiple: 6, amp: 0.25 }, { multiple: 8, amp: 0.15 }] }, // Drawbar Organ — full registration
   // Percussive Organ — this arrangement doubles it high (C6-E6); the 6'/8' drawbars
   // there scream past 8kHz and bury the mix, so keep it low and drop the top ranks.
@@ -92,7 +105,11 @@ const OVERRIDE: Record<number, Voice> = {
   30: { attack: 0.004, release: 0.2, gain: 0.9, ks: ks(0.999, 0.3, 0.05, 0.05, 0.1, 0.72), amp: cab(6, 0.75, 3800, 0.85) }, // Distortion Guitar — KS string, high amp drive
   // Finger Bass — matched to the record's measured bass: rounded (h2~0.5, fast
   // harmonic rolloff) and plucked (decays to ~0.2 sustain over ~0.3s).
-  33: { attack: 0.006, release: 0.05, gain: 1.5, fm: fm(1, 2.8, 0.25, 0.28) },
+  // Finger Bass — a 40-80 Hz fundamental (this bass drops to ~41 Hz) is nearly
+  // inaudible on normal speakers and heavily de-weighted by the ear, so lift the
+  // level AND raise the FM index + sustain so the pitch reads through its upper
+  // harmonics (which sit in the reproducible range) instead of a buried fundamental.
+  33: { attack: 0.006, release: 0.05, gain: 1.95, fm: fm(1, 4.0, 0.3, 0.44) },
   // Fretless Bass — a bass IS a plucked string, so use Karplus-Strong: it decays
   // naturally (no drone, unlike the sustaining sub family default). Voiced soft and
   // round for the fretless "mwah": soft finger pluck (tone 0.4, pick 0.3 mid-string),
@@ -105,7 +122,7 @@ const OVERRIDE: Record<number, Voice> = {
   52: { attack: 0.08, release: 0.2, gain: 0.7, formant: { vowel: "a", voices: 4, detune: 12 } }, // Choir Aahs
   53: { attack: 0.08, release: 0.2, gain: 0.7, formant: { vowel: "o", voices: 4, detune: 14 } }, // Voice Oohs
   71: { attack: 0.03, release: 0.08, gain: 0.75, harmonics: [{ multiple: 3, amp: 0.4 }, { multiple: 5, amp: 0.2 }, { multiple: 7, amp: 0.1 }] }, // Clarinet — odd harmonics
-  73: { attack: 0.05, release: 0.08, gain: 0.65, harmonics: [{ multiple: 2, amp: 0.05 }] }, // Flute — nearly pure
+  73: { attack: 0.05, release: 0.08, gain: 1.35, harmonics: [{ multiple: 2, amp: 0.14 }, { multiple: 3, amp: 0.06 }] }, // Flute — nearly pure, but louder + a little body (was near-inaudible)
   // Rain (FX 1) — an airy, detuned shimmer WASH, not the metallic inharmonic FM the
   // synth-effects family default gave (which read as weird and near-inaudible). High
   // cutoff + wide-detuned saws for a light-rain/wind-chime shimmer; a moderate attack
@@ -121,7 +138,7 @@ const OVERRIDE: Record<number, Voice> = {
   // ~2810 (brightest); steel & nylon each carry a loop-loss (loopCut) so their
   // highs decay like a real string — rounder tails, not cutting. Jazz is the dark
   // mellow archtop, muted the short palm-mute.
-  24: { attack: 0.025, release: 0.16, gain: 0.95, ks: ks(0.994, 0.96, 0.66, 0.02, 0.44, 0.15, { loopCut: 12000 }), sympathetic: symp(GTR_STRINGS, 0.5, 0.45, 0.12) }, // Nylon Guitar — round mellow nylon: soft finger pluck, low tone + loop-loss so the highs decay fast, warm & bodied, mid-string
+  24: { attack: 0.025, release: 0.16, gain: 0.95, ks: ks(0.994, 0.96, 0.66, 0.02, 0.36, 0.15, { loopCut: 5000 }), sympathetic: symp(GTR_STRINGS, 0.5, 0.45, 0.1) }, // Nylon Guitar — round MELLOW nylon: soft finger pluck; loopCut lowered 12k->5k so the bright highs actually decay fast (was too bright/aggressive), warm & bodied, mid-string
   25: { attack: 0.019, release: 0.18, gain: 0.9, ks: ks(0.9975, 0.4, 0.26, 0.05, 0.4, 0.5, { loopCut: 16000 }), sympathetic: symp(GTR_STRINGS, 0.5, 0.36, 0.16) }, // Steel Guitar — bright steel-string, de-clawed: low stiffness (no metallic zing) + softer tone + gentle loop-loss tail so it's not cutting; still clearly brighter than the nylon
   26: { attack: 0.012, release: 0.16, gain: 0.9, ks: ks(0.9965, 0.62, 0.3, 0.05, 0.3, 0.42), amp: cab(1.15, 0.25, 3600, 1.05) }, // Jazz Guitar — mellow hollow-body archtop through a warm, dark cab (was falling through to the generic guitar, identical to Muted)
   27: { attack: 0.022, release: 0.16, gain: 0.9, ks: ks(0.996, 0.5, 0.1, 0.02, 0.26, 0.5, { strings: 2, spread: 4, pluckNoise: 0.14 }), sympathetic: symp(GTR_STRINGS, 0.55, 0.35, 0.18), amp: cab(1.4, 0.7, 4500, 1.15) }, // Clean Guitar — electric; 2 strings +4c beating + pick-contact noise for a live vibrating-string feel (not synthy)

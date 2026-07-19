@@ -75,13 +75,20 @@
       th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); }
       th { color: var(--muted); font-weight: 600; }
       .filelabel { color: var(--muted); }
+      /* Custom file picker: the native <input type=file> middle-truncates the
+         filename in its own shadow DOM (uncontrollable), so hide it and render the
+         WHOLE name ourselves. The wrapping <label> still opens the picker on click. */
+      .filehidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); border: 0; }
+      .filebtn { display: inline-block; background: var(--panel2); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; padding: 5px 12px; margin: 0 8px 0 4px; cursor: pointer; font-size: 13px; }
+      .filelabel:hover .filebtn { border-color: var(--accent); }
+      .filename { color: var(--fg); word-break: break-all; }
       h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 0 0 10px; }
       /* let the wide mixer table scroll inside the panel instead of pushing a
          horizontal scrollbar onto the whole page on narrow viewports */
       #tracks { overflow-x: auto; }
       #tracks table { font-size: 12px; }
       #tracks td, #tracks th { padding: 4px 6px; white-space: nowrap; }
-      #tracks select { padding: 3px 6px; font-size: 12px; max-width: 190px; }
+      #tracks select { padding: 3px 6px; font-size: 12px; max-width: none; }
       #tracks input[type="range"] { width: 72px; vertical-align: middle; }
       .mixbtn { padding: 2px 8px; font-size: 12px; border-radius: 6px; min-width: 30px; }
       /* icon buttons: center the glyph, keep the compact footprint, no reflow */
@@ -92,6 +99,20 @@
       .mixbtn.on-mute { background: #7a2233; border-color: #b5179e; }
       .mixbtn.on-solo { background: #2a5a2a; border-color: #8ac926; }
       .cellval { color: var(--muted); font-variant-numeric: tabular-nums; display: inline-block; min-width: 26px; }
+      /* Trk # swatch — the same per-channel colour the piano roll paints its notes. */
+      .trkswatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+      /* Hovering a mixer row glows the whole row in its own channel colour (--rowcolor,
+         the hue the piano roll paints its notes) — inset shadow + outline, no border,
+         so the glow never shifts layout. The plain rgba background is the fallback for
+         engines without color-mix(); the color-mix() rules refine it where supported. */
+      #tracks tbody tr:hover {
+        background: rgba(76,201,240,0.10); /* fallback tint (accent) where color-mix() is unsupported */
+        box-shadow: inset 0 0 0 9999px color-mix(in srgb, var(--rowcolor, var(--accent)) 14%, transparent);
+        outline: 1px solid color-mix(in srgb, var(--rowcolor, var(--accent)) 55%, transparent);
+        outline-offset: -1px;
+      }
+      /* the instrument <select> shows its engine colour (options are tinted too). */
+      #tracks select[data-inst] { font-weight: 600; }
       /* per-channel synthesis-engine colour chips (mixer rows) + legend.
          --eng carries the engine colour; the dot always shows it, the pill tint
          degrades gracefully where color-mix() is unsupported. */
@@ -193,11 +214,19 @@
           <span class="filelabel">(used when GM is off)</span>
         </div>
         <div class="row">
-          <label class="filelabel">Import a .mid file: <input type="file" id="file" accept=".mid,.midi,audio/midi" /></label>
+          <label class="filelabel">Import a .mid file:
+            <input type="file" id="file" accept=".mid,.midi,audio/midi" class="filehidden" />
+            <span class="filebtn">Choose file</span>
+            <span id="fileName" class="filename">no file chosen</span>
+          </label>
         </div>
         <div class="row">
           <button id="saveProject" style="padding:4px 12px; font-size:13px;">Save project (.chip)</button>
-          <label class="filelabel">Load project: <input type="file" id="projectFile" accept=".chip,.json,application/json" /></label>
+          <label class="filelabel">Load project:
+            <input type="file" id="projectFile" accept=".chip,.json,application/json" class="filehidden" />
+            <span class="filebtn">Choose file</span>
+            <span id="projectFileName" class="filename">no file chosen</span>
+          </label>
         </div>
       </div>
 
