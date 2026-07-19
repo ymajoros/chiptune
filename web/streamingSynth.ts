@@ -33,6 +33,8 @@ import {
   type AmpConfig,
   Compressor,
   VOWELS,
+  FORMANT_PREEMPH,
+  FORMANT_PREEMPH_MAKEUP,
   gmVoiceFor,
   ksStringSetup,
   seedString,
@@ -239,6 +241,7 @@ export class PitchedVoice implements RtVoice {
   private low = 0; private band = 0; // sub SVF
   private fx1 = [0, 0, 0]; private fx2 = [0, 0, 0]; private fy1 = [0, 0, 0]; private fy2 = [0, 0, 0]; // formant biquads
   private co: Biquad[] = []; private A!: { f: number[]; g: number[]; bw: number[] }; private B!: { f: number[]; g: number[]; bw: number[] }; private morph = false;
+  private fPrev = 0; // formant lip-radiation differentiator state
   private ksLines: Float32Array[] = []; private ksIdx!: Int32Array; private ksLi!: Int32Array; // KS: per-string delay lines
   private ksC!: Float64Array; private ksDisp!: Float64Array; private ksB = 0; private ksDecay = 1; // per-string tuning/dispersion coeffs; shared damping/decay
   private ksLpA = 1; private ksLpState!: Float64Array; // Extended-KS loop loss filter (1 = off)
@@ -473,6 +476,9 @@ export class PitchedVoice implements RtVoice {
             this.phases[vv] = ph;
           }
           s /= nv;
+          // lip-radiation pre-emphasis (mirrors renderFormant in synth.ts): +6 dB/oct
+          // tilt so the upper formants speak — the vowel reads bright/present, not low.
+          { const d = s - FORMANT_PREEMPH * this.fPrev; this.fPrev = s; s = d * FORMANT_PREEMPH_MAKEUP; }
           const t = morph ? this.k / this.n : 0;
           let out = 0;
           for (let j = 0; j < 3; j++) {

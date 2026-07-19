@@ -207,6 +207,19 @@ export interface VoiceOverride {
   amp?: AmpConfig; // guitar amp + cabinet voicing (electric-guitar colour)
 }
 
+// Lip-radiation pre-emphasis for the formant/vocal engine. A real vocal chain is
+// glottal source -> vocal-tract formants -> LIP RADIATION, and that last stage is
+// a first-difference differentiator (+6 dB/oct). Our saw source + band-pass bank
+// had NO radiation stage, so the output stayed F1-dominated and every vowel read
+// dark/low/muddy — the ~3 kHz "singer's formant" region barely spoke. Applying the
+// one-zero differentiator y = x - a·x[-1] to the source restores the upper-formant
+// tilt so the voice sits in its expected bright, present register. FORMANT_PREEMPH
+// is the differentiator coefficient; FORMANT_PREEMPH_MAKEUP compensates the level
+// the differentiator removes (it strongly attenuates the low end). Exported so the
+// streaming twin (web/streamingSynth.ts) uses byte-identical values.
+export const FORMANT_PREEMPH = 0.75;
+export const FORMANT_PREEMPH_MAKEUP = 3.71; // ~preserves the pre-fix output level (the differentiator strips the strong low end)
+
 // Vowel formant table: [F1,F2,F3] Hz, matching gains, and bandwidths Hz.
 // Values are typical for a sung voice; three peaks are enough to read as vowels.
 export const VOWELS: Record<string, { f: number[]; g: number[]; bw: number[] }> = {
@@ -397,6 +410,7 @@ function renderFormant(
   const y2 = [0, 0, 0];
   // precomputed static coeffs (used when not morphing)
   const co = [0, 1, 2].map((i) => bandpass(A.f[i], A.f[i] / A.bw[i]));
+  let prevS = 0; // lip-radiation differentiator state
 
   for (let k = 0; k < n; k++) {
     const vf = vibFactor(vib, k); // pitch LFO
@@ -411,6 +425,9 @@ function renderFormant(
       phases[v] = ph;
     }
     s /= nv;
+    // lip-radiation pre-emphasis (see FORMANT_PREEMPH): +6 dB/oct tilt so the
+    // upper formants speak and the vowel reads bright/present, not dark/low.
+    { const d = s - FORMANT_PREEMPH * prevS; prevS = s; s = d * FORMANT_PREEMPH_MAKEUP; }
 
     // --- formant band-pass bank ---
     const t = morph ? k / n : 0;
