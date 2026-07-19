@@ -90,7 +90,7 @@ const OVERRIDE: Record<number, Voice> = {
   // round for the fretless "mwah": soft finger pluck (tone 0.4, pick 0.3 mid-string),
   // moderate damping rolling off the highs into a singing tone, a long low ring
   // (decay 0.9975), a touch of body, a slightly slower/softer attack than a picked bass.
-  35: { attack: 0.02, release: 0.1, gain: 1.35, ks: ks(0.99, 1.0, 0.02, 0, 0.4, 0.22), amp: cab(1, 0, 900, 1.4) }, // Fretless Bass — dark plucked string through a bass cabinet: round, decays, no sitar buzz
+  35: { attack: 0.018, release: 0.1, gain: 1.4, ks: ks(0.99, 1.0, 0, 0, 0.45, 0.5, { loopCut: 1200 }) }, // Fretless Bass — Extended-KS loop loss (freq-dependent damping): bright pluck settles to a round low tone, decays like a real string (no sitar)
   38: { attack: 0.004, release: 0.05, gain: 1.15, sub: sub("saw", 700, 0.5, 1400, 0.12, 0, 1) }, // Synth Bass 1
   45: { attack: 0.003, release: 0.08, gain: 0.85, ks: ks(0.99, 0.8, 0.12, 0.16, 0.25, 0.55) }, // Pizzicato Strings — plucked, bodied (damping 0.4->0.8 preserves tone after the mapping fix)
   46: { attack: 0.003, release: 0.2, gain: 0.85, ks: ks(0.998, 0.7, 0.2, 0.1, 0.22, 0.62), sympathetic: symp([36, 41, 43, 45, 48, 50, 52, 55, 57, 60, 64, 67], 0.72, 0.25, 0.22) }, // Orchestral Harp — resonant string (damping 0.35->0.70 preserved)
