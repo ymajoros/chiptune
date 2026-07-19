@@ -132,6 +132,58 @@
       }
       .englegend { gap: 6px 14px; margin: 2px 0 10px; }
       .englegitem { color: var(--muted); font-size: 12px; }
+      /* custom instrument picker: hidden native <select> (source of truth) + a styled
+         trigger button (real engine pill + name) + a fixed popup listbox of chipped
+         rows. The native <select> is kept in the DOM, just visually clipped away. */
+      .nativehide { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); border: 0; }
+      /* .ichip — the engine pill (colour dot + short abbr), tinted to --eng. Mirrors
+         .engchip; the tint degrades gracefully where color-mix() is unsupported. */
+      .ichip {
+        display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto;
+        font-size: 10px; font-weight: 700; letter-spacing: 0.03em; line-height: 1.4;
+        white-space: nowrap; color: var(--eng, var(--muted));
+        border: 1px solid color-mix(in srgb, var(--eng, var(--muted)) 45%, transparent);
+        background: color-mix(in srgb, var(--eng, var(--muted)) 15%, transparent);
+        border-radius: 6px; padding: 1px 6px 1px 5px;
+      }
+      .ichip .idot {
+        width: 8px; height: 8px; border-radius: 2px; flex: 0 0 auto;
+        background: var(--eng, var(--muted)); box-shadow: inset 0 0 0 1px rgba(0,0,0,0.3);
+      }
+      /* .ipick — the trigger button that visually replaces the native <select>. */
+      #tracks .ipick {
+        display: inline-flex; align-items: center; gap: 7px; min-width: 190px; max-width: 260px;
+        background: var(--panel2); color: var(--fg); border: 1px solid var(--border);
+        border-radius: 8px; padding: 3px 8px; font-size: 12px; font-weight: 600;
+        cursor: pointer; text-align: left;
+      }
+      #tracks .ipick:hover, #tracks .ipick[aria-expanded="true"] { border-color: var(--accent); }
+      #tracks .ipick .ipickname { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #tracks .ipick .ipickcaret { color: var(--muted); font-size: 10px; flex: 0 0 auto; }
+      /* .ipickpop — the popup listbox. position:fixed so it floats above the mixer's
+         `#tracks { overflow-x: auto }` clip and everything else; scrolls internally. */
+      .ipickpop {
+        position: fixed; z-index: 60; overflow-y: auto; overflow-x: hidden;
+        background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
+        box-shadow: 0 12px 34px rgba(0,0,0,0.55); padding: 4px; min-width: 240px; max-width: 400px;
+      }
+      .ipickpop[hidden] { display: none; }
+      .ipickpop .ipickgroup {
+        color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
+        padding: 6px 8px 3px; position: sticky; top: 0; background: var(--panel2);
+      }
+      .ipickpop .ipickopt {
+        display: flex; align-items: center; gap: 8px; padding: 4px 8px;
+        border-radius: 6px; cursor: pointer; font-size: 12px;
+      }
+      .ipickpop .ipickopt .ipickoptname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .ipickpop .ipickopt:hover, .ipickpop .ipickopt.active {
+        background: color-mix(in srgb, var(--accent) 18%, transparent);
+      }
+      .ipickpop .ipickopt.sel {
+        background: color-mix(in srgb, var(--accent) 28%, transparent);
+        outline: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: -1px;
+      }
       /* dynamic effects rack */
       #fxRack { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
       .fxcard { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }

@@ -87,7 +87,19 @@ const OVERRIDE: Record<number, Voice> = {
   // felt-hammer tick, PLUS a sympathetic-string bank tuned to octaves & fifths
   // across the range — the undamped strings of a real piano ring in sympathy with
   // whatever you play, which is most of what makes an acoustic grand sound alive.
-  0: { attack: 0.002, release: 0.3, gain: 0.85, ks: ks(0.9972, 0.82, 0.46, 0.42, 0, 0.52, { strings: 3, spread: 4, velBright: 0.5, pluckNoise: 0.06 }), sympathetic: symp([24, 31, 36, 43, 48, 55, 60, 67, 72, 79], 0.8, 0.3, 0.26) },
+  // Acoustic Grand — hammered-KS piano. The "elastic/rubber-band" artifact came
+  // from stacking the base `damping` averager AND the loopCut one-pole, which
+  // collapses the highs too fast (a bright->dull filter-sweep snap). Fix: DECOUPLE
+  // them — low base damping (0.32) + a gentler loop cut (9 kHz) shape the tone
+  // gradually, a DARK excitation (tone 0.4) keeps it warm without a cutting edge,
+  // no dispersion (that was the sproing), and a strong short strike transient
+  // (pluckNoise 0.14 + a ~1.5ms attack) reads as a hammer, not a pluck. Sympathetic
+  // ring + soundboard body fill it out. (Chosen by ear from an A/B; realism ceiling
+  // still applies — KS is a plucked model, so this is a warm impression, not a Steinway.)
+  0: { attack: 0.0015, release: 0.3, gain: 0.85, ks: ks(0.9972, 0.32, 0.62, 0, 0.14, 0.4, { strings: 2, spread: 3, velBright: 0.5, pluckNoise: 0.14, loopCut: 9000 }), sympathetic: symp([24, 31, 36, 43, 48, 55, 60, 67, 72, 79], 0.86, 0.24, 0.45) },
+  // Bright Piano — a brighter, more forward sibling on the same hammered model:
+  // higher loop cut (13 kHz) + brighter source tone/velBright, a touch less body.
+  1: { attack: 0.0015, release: 0.28, gain: 0.85, ks: ks(0.9972, 0.32, 0.55, 0, 0.14, 0.52, { strings: 2, spread: 3, velBright: 0.6, pluckNoise: 0.14, loopCut: 13000 }), sympathetic: symp([24, 31, 36, 43, 48, 55, 60, 67, 72, 79], 0.86, 0.26, 0.4) },
   16: { attack: 0.012, release: 0.05, gain: 1.0, foldAbove: 81, harmonics: [{ multiple: 2, amp: 0.7 }, { multiple: 3, amp: 0.4 }, { multiple: 4, amp: 0.5 }, { multiple: 6, amp: 0.25 }, { multiple: 8, amp: 0.15 }] }, // Drawbar Organ — full registration
   // Percussive Organ — this arrangement doubles it high (C6-E6); the 6'/8' drawbars
   // there scream past 8kHz and bury the mix, so keep it low and drop the top ranks.
