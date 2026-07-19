@@ -21,7 +21,7 @@
         background: var(--bg);
         color: var(--fg);
       }
-      .wrap { max-width: 900px; margin: 0 auto; padding: 24px 16px 64px; }
+      .wrap { width: 100%; max-width: 1900px; margin: 0 auto; padding: 24px clamp(16px, 4vw, 48px) 64px; }
       h1 { font-size: 20px; margin: 0 0 4px; }
       h1 .tag { color: var(--muted); font-weight: 400; font-size: 13px; }
       .sub { color: var(--muted); margin: 0 0 20px; }
@@ -58,6 +58,9 @@
       th { color: var(--muted); font-weight: 600; }
       .filelabel { color: var(--muted); }
       h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 0 0 10px; }
+      /* let the wide mixer table scroll inside the panel instead of pushing a
+         horizontal scrollbar onto the whole page on narrow viewports */
+      #tracks { overflow-x: auto; }
       #tracks table { font-size: 12px; }
       #tracks td, #tracks th { padding: 4px 6px; white-space: nowrap; }
       #tracks select { padding: 3px 6px; font-size: 12px; max-width: 150px; }
