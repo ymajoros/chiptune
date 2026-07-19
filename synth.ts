@@ -649,6 +649,20 @@ function renderKs(
     Li[s] = setup.Li; disp[s] = setup.disp; C[s] = setup.C; b = setup.b; decay = setup.decay; lpA = setup.lpA;
     lines[s] = seedString(setup.Li, ks.pick ?? 0, effTone);
   }
+  // Pre-darken the excitation to the loop's HF-damping cutoff so the initial
+  // delay-line readout isn't a bright NOISE BURST — a smooth fingered attack for
+  // heavily-damped strings (bass). Re-normalize energy so the note stays full.
+  if (lpA < 1) {
+    const fadeN = Math.min(Math.floor(0.003 * SR), 256); // ~3ms raised-cosine fade-in -> no onset click
+    for (let s = 0; s < ns; s++) {
+      const seed = lines[s]; let lp = 0, ss = 0;
+      for (let i = 0; i < seed.length; i++) { lp += lpA * (seed[i] - lp); seed[i] = lp; ss += lp * lp; }
+      const rms = Math.sqrt(ss / seed.length);
+      const g = rms > 1e-6 ? 0.5774 / rms : 1;
+      const fN = Math.min(fadeN, seed.length >> 1);
+      for (let i = 0; i < seed.length; i++) { let x = seed[i] * g; if (i < fN) x *= 0.5 - 0.5 * Math.cos((Math.PI * i) / fN); seed[i] = x; }
+    }
+  }
   const body = ks.body ?? 0;
   // modal body: one band-pass per body mode, summed (a resonator-bank "body IR")
   const bodyC = body > 0 ? BODY_MODES.map((m) => ({ ...bandpass(m.f, m.q), g: m.g })) : [];
