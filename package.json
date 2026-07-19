@@ -1,0 +1,20 @@
+{
+  "name": "chiptune-web",
+  "version": "1.0.0",
+  "description": "chiptune web MIDI player (dev build)",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "serve": "node build.mjs --serve"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "esbuild": "^0.28.1"
+  }
+}
