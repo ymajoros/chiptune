@@ -282,6 +282,19 @@ export class PitchedVoice implements RtVoice {
         this.ksLi[s] = setup.Li; this.ksC[s] = setup.C; this.ksDisp[s] = setup.disp; this.ksB = setup.b; this.ksDecay = setup.decay; this.ksLpA = setup.lpA;
         this.ksLines[s] = seedString(setup.Li, v.ks.pick ?? 0, effTone);
       }
+      // pre-darken the excitation to the loop cutoff (smooth fingered attack, no
+      // noise burst on heavily-damped strings); re-normalize energy. Mirrors renderKs.
+      if (this.ksLpA < 1) {
+        const fadeN = Math.min(Math.floor(0.003 * SR), 256); // ~3ms fade-in -> no onset click
+        for (let s = 0; s < ns; s++) {
+          const seed = this.ksLines[s]; let lp = 0, ss = 0;
+          for (let i = 0; i < seed.length; i++) { lp += this.ksLpA * (seed[i] - lp); seed[i] = lp; ss += lp * lp; }
+          const rms = Math.sqrt(ss / seed.length);
+          const g = rms > 1e-6 ? 0.5774 / rms : 1;
+          const fN = Math.min(fadeN, seed.length >> 1);
+          for (let i = 0; i < seed.length; i++) { let x = seed[i] * g; if (i < fN) x *= 0.5 - 0.5 * Math.cos((Math.PI * i) / fN); seed[i] = x; }
+        }
+      }
       if ((v.ks.body ?? 0) > 0) { this.bodyC = BODY_MODES.map((m) => ({ ...bandpass(m.f, m.q), g: m.g })); this.bodyState = new Float64Array(this.bodyC.length * 4); }
     } else if (v.formant) {
       this.engine = "formant";

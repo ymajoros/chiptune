@@ -707,13 +707,28 @@ function ov(key: string): VoiceOverride {
   return (voiceOverrides[key] ??= {});
 }
 
+// Gain appears in BOTH the mixer row and the instrument editor; keep the two in
+// sync so editing one doesn't leave the other showing a stale (misleading) value.
+function syncGainControls(key: string, val: number): void {
+  const mixSlider = els.tracks.querySelector<HTMLInputElement>(`input[data-k="${key}"][data-f="gain"]`);
+  if (mixSlider) mixSlider.value = String(val);
+  const mixLabel = document.getElementById(`gain-${key}`);
+  if (mixLabel) mixLabel.textContent = val.toFixed(2);
+  const edSlider = els.instEditor.querySelector<HTMLInputElement>(`input[data-ie="1"][data-f="gain"][data-k="${key}"]`);
+  if (edSlider) {
+    edSlider.value = String(val);
+    const edOut = els.instEditor.querySelector<HTMLElement>(`[data-out="gain."]`);
+    if (edOut) edOut.textContent = String(val);
+  }
+}
+
 els.tracks.addEventListener("input", (e) => {
   const t = e.target as HTMLInputElement;
   const key = t.dataset.k, field = t.dataset.f;
   if (!key || !field) return;
   const val = Number(t.value);
   const m = mixer.get(key)!;
-  if (field === "gain") { ov(key).gain = val; ($(`gain-${key}`) as HTMLElement).textContent = val.toFixed(2); applyOptions(); }
+  if (field === "gain") { ov(key).gain = val; syncGainControls(key, val); applyOptions(); }
   else if (field === "volume") { m.volume = val; ($(`vol-${key}`) as HTMLElement).textContent = val.toFixed(2); }
   saveConfig();
 });
@@ -910,7 +925,7 @@ els.instEditor.addEventListener("input", (e) => {
   const out = els.instEditor.querySelector<HTMLElement>(`[data-out="${field}.${sub}"]`);
   if (field === "attack") { ov.attack = Number(t.value) / 1000; }
   else if (field === "release") { ov.release = Number(t.value) / 1000; }
-  else if (field === "gain") { ov.gain = Number(t.value); }
+  else if (field === "gain") { ov.gain = Number(t.value); syncGainControls(key, ov.gain); }
   else if (field === "foldAbove") { const n = Number(t.value); if (n <= 0) delete ov.foldAbove; else ov.foldAbove = n; }
   else if (field === "sympathetic") {
     // the instrument's own strings ringing along; seed strings/damping from the
