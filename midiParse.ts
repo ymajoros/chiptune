@@ -216,7 +216,7 @@ export function parseMidiData(data: Buffer): Song {
 
 // run directly:  node midiParse.ts <file.mid>
 if (import.meta.filename === process.argv[1]) {
-  const path = process.argv[2] ?? `${process.env.HOME}/Downloads/Patrick_singer_Qui_A_Le_Droit.mid`;
+  const path = process.argv[2] ?? `${process.env.HOME}/Downloads/input.mid`;
   const song = parseMidi(path);
   console.log(
     `ppq=${song.ppq}  tempo=${song.tempoBpm} bpm  ` +

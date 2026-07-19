@@ -3,12 +3,13 @@
 // (fs / child_process WAV+CLI, Buffer base64 decode, `process` in the CLI guard)
 // are neutralised here at build time via stubs, never touching synth.ts.
 //
-//   node build.mjs            one-off dev build      -> web/app.js  (bundles songData.ts)
+//   node build.mjs            one-off dev build      -> web/app.js
 //   node build.mjs --serve    dev build, watch, serve at http://localhost:8080
 //   node build.mjs --release  minified, self-contained release -> dist/
 //
-// The RELEASE build swaps the local (copyrighted) songData.ts for the ORIGINAL
-// web/demoSong.ts, so the distributable never contains the copyrighted song.
+// Both builds bundle the original CC0 demo loop (web/demoSong.ts). No copyrighted
+// song data lives in this repo; the local singing-synth reads its own gitignored
+// songData.ts / songLyrics.ts, which are never imported by the web player.
 import * as esbuild from "esbuild";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
@@ -35,20 +36,20 @@ const nodeStub = {
   },
 };
 
-// Release-only: redirect any import of songData.ts to the original demo song, so
-// the copyrighted note data is never read, resolved, or bundled into dist/.
-const swapSong = {
-  name: "swap-song",
+// Safety net: hard-fail the build if anything ever pulls the local (gitignored)
+// songData.ts into the bundle. The app imports web/demoSong.ts directly, so this
+// should never trigger — it just guarantees the copyrighted data can't leak in.
+const blockSong = {
+  name: "block-song",
   setup(build) {
-    build.onResolve({ filter: /(^|\/)songData\.ts$/ }, () => ({
-      path: resolve(root, "web/demoSong.ts"),
+    build.onResolve({ filter: /(^|\/)songData\.ts$/ }, (a) => ({
+      errors: [{ text: `refusing to bundle ${a.path} (copyrighted, gitignored) — import web/demoSong.ts instead` }],
     }));
   },
 };
 
 // Label shown for the pre-bundled song (injected via `define`, see app.ts).
-const DEV_LABEL = "Chiptune demo (bundled)";
-const RELEASE_LABEL = "Chiptune demo — original Am–F–C–G loop";
+const SONG_LABEL = "Chiptune demo — original Am–F–C–G loop (CC0)";
 
 const base = {
   entryPoints: [resolve(root, "web/app.ts")],
@@ -57,7 +58,7 @@ const base = {
   platform: "browser",
   target: "es2022",
   logLevel: "info",
-  // Inject browser shims for the `Buffer` (songData base64) and `process` (CLI
+  // Inject browser shims for the `Buffer` (MIDI parsing) and `process` (CLI
   // guard) globals so the engine files run unmodified.
   inject: [resolve(root, "web/shims/buffer.js"), resolve(root, "web/shims/process.js")],
 };
@@ -73,8 +74,8 @@ if (release) {
     outfile: resolve(dist, "app.js"),
     sourcemap: false,
     minify: true,
-    define: { BUNDLED_SONG_LABEL: JSON.stringify(RELEASE_LABEL) },
-    plugins: [nodeStub, swapSong], // swapSong => demoSong.ts, never songData.ts
+    define: { BUNDLED_SONG_LABEL: JSON.stringify(SONG_LABEL) },
+    plugins: [nodeStub, blockSong],
   });
 
   // Static shell (already references ./app.js relatively) + license + readme.
@@ -85,13 +86,13 @@ if (release) {
   console.log("built release into dist/ (original demo song, minified, no sourcemap)");
   console.log("serve it with any static server, e.g.:  cd dist && python3 -m http.server 8080");
 } else {
-  // ---- dev build (uses the local songData.ts) ------------------------------
+  // ---- dev build -----------------------------------------------------------
   const options = {
     ...base,
     outfile: resolve(root, "web/app.js"),
     sourcemap: true,
-    define: { BUNDLED_SONG_LABEL: JSON.stringify(DEV_LABEL) },
-    plugins: [nodeStub],
+    define: { BUNDLED_SONG_LABEL: JSON.stringify(SONG_LABEL) },
+    plugins: [nodeStub, blockSong],
   };
 
   if (serve) {

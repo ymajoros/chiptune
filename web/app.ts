@@ -32,15 +32,15 @@ import {
   type KsConfig,
   type FormantConfig,
 } from "../synth.ts";
-import { song as bundledSong } from "../songData.ts";
+import { song as bundledSong } from "./demoSong.ts";
 import { GM_NAMES, gmVoice } from "../gm.ts";
 import { parseMidiBuffer } from "./browserMidi.ts";
 import type { Song, Note } from "../midiParse.ts";
 import { StreamingSynth, defaultChannelMix, PitchedVoice, MASTER_GAIN, type ChannelMix, type WebRenderOptions, type FxInstance, type FxType } from "./streamingSynth.ts";
 
 // Label shown for the pre-bundled song, injected at build time (see build.mjs).
-// The dev build sets it to the local songData.ts's name; the release build sets
-// it to the original demo song. Declared here only so the reference type-checks.
+// Both dev and release builds bundle the original CC0 demo loop (web/demoSong.ts).
+// Declared here only so the reference type-checks.
 declare const BUNDLED_SONG_LABEL: string;
 
 type EngineType = "additive" | "fm" | "sub" | "ks" | "formant";

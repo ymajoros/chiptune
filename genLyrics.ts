@@ -14,7 +14,7 @@ import { writeFileSync } from "node:fs";
 import { parseMidi } from "./midiParse.ts";
 import { frenchSyllable } from "./g2p.ts";
 
-const path = process.argv[2] ?? `${process.env.HOME}/Downloads/Patrick_singer_Qui_A_Le_Droit.mid`;
+const path = process.argv[2] ?? `${process.env.HOME}/Downloads/input.kar`;
 const outFile = process.argv.includes("--out") ? process.argv[process.argv.indexOf("--out") + 1] : "songLyrics.ts";
 
 const song = parseMidi(path);

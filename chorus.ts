@@ -1,6 +1,6 @@
 /**
- * chorus.ts — the whole thing together: sing the refrain of "Je vois la mer"
- * over the song's own backing track.
+ * chorus.ts — the whole thing together: sing the lyrics (see lyrics.ts) over the
+ * local song's own backing track. The song lives in the gitignored songData.ts.
  *
  *   songData.ts ──> melody notes (track 3 / ch 0) ──> voice.ts  (sung lead)
  *               └─> everything else               ──> synth.ts  (backing)
