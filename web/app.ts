@@ -567,8 +567,9 @@ function frame(): void {
   if (liveNode && liveConnected && liveVoices.size === 0) { try { liveNode.disconnect(); } catch {} liveConnected = false; }
   requestAnimationFrame(frame);
 }
-// redraw on resize, and once after first layout (initial canvas width may be 0)
-addEventListener("resize", () => drawRoll());
+// redraw on resize, and once after first layout (initial canvas width may be 0);
+// the piano refits its octave count to the new width too (no-op unless it changed)
+addEventListener("resize", () => { drawRoll(); rebuildPianoIfNeeded(); });
 requestAnimationFrame(() => drawPlayhead(offset));
 
 // ---- mixer / instrument editor table ----
@@ -1089,25 +1090,60 @@ function switchEngine(key: string, engine: EngineType): void {
 }
 
 // ---- on-screen piano + audition ----
-// The piano spans ~2.4 octaves around middle C. `octaveShift` (in whole octaves)
-// pans that window lower/higher: every rendered key's data-pitch — and the
-// computer-keyboard map — moves by ±12 per octave, so both stay in lockstep.
-const PIANO_LO = 48, PIANO_HI = 76; // C3..E5 at octaveShift 0 (middle C centred)
+// The piano renders a whole number of octaves centred on middle C (C4 = 60).
+// `octaveShift` (in whole octaves) pans that window lower/higher: every rendered
+// key's data-pitch — and the computer-keyboard map — moves by ±12 per octave, so
+// both stay in lockstep. The octave COUNT adapts to the container's width
+// (recomputed on resize) between PIANO_OCT_MIN when narrow and PIANO_OCT_MAX when
+// there's room; the home octave 60..72 always stays near the middle of the range.
 const BLACK = new Set([1, 3, 6, 8, 10]);
 const OCT_MIN = -3, OCT_MAX = 3; // keeps every pitch within MIDI 0..127
+const PIANO_OCT_MIN = 2, PIANO_OCT_MAX = 7; // fitting bounds for the on-screen keys
+const PIANO_KEY_W = 34;   // white-key width in px — must match `.pkey` in index.html
+const WHITE_PER_OCT = 7;  // white keys per octave — drives the width→octaves math
 const OCT_KEY = "chiptune:octaveShift";
 let octaveShift = 0;
+let pianoOcts = 0; // octave count last rendered — lets resize skip no-op rebuilds
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 function noteName(m: number): string { return `${NOTE_NAMES[((m % 12) + 12) % 12]}${Math.floor(m / 12) - 1}`; }
+/** How many whole octaves fit the piano's current width, clamped to sane bounds.
+ *  White keys set the footprint (black keys overlap with zero net width), so the
+ *  width of one octave is WHITE_PER_OCT keys. */
+function pianoOctaveCount(): number {
+  const avail = els.piano.clientWidth;
+  if (!avail) return 3; // pre-layout (clientWidth 0): a sensible default span
+  // An N-octave keyboard ends on the top C, so it has N*WHITE_PER_OCT + 1 white
+  // keys; budget that extra key so it fits without spawning an inner scrollbar
+  // (which would change the piano's height and could oscillate the fit at a
+  // boundary). Below PIANO_OCT_MIN we clamp up and let overflow-x scroll instead.
+  const n = Math.floor((avail - PIANO_KEY_W) / (PIANO_KEY_W * WHITE_PER_OCT));
+  return Math.max(PIANO_OCT_MIN, Math.min(PIANO_OCT_MAX, n));
+}
 function buildPiano(): void {
+  const octs = pianoOctaveCount();
+  pianoOcts = octs;
+  // Centre the window on middle C: put floor(octs/2) octaves below C4 so the
+  // computer-keyboard home octave (60..72) lands in the middle of the range and
+  // the ◀/▶ Oct controls keep panning it symmetrically. lo/hi are always C's.
+  const lo = 60 - Math.floor(octs / 2) * 12;
+  const hi = lo + octs * 12; // inclusive: octs octaves, ending on the top C
   let html = "";
-  for (let p = PIANO_LO; p <= PIANO_HI; p++) {
+  for (let p = lo; p <= hi; p++) {
     const pitch = p + octaveShift * 12;
     if (pitch < 0 || pitch > 127) continue;
     const black = BLACK.has(pitch % 12);
     html += `<span class="pkey${black ? " black" : ""}" data-pitch="${pitch}"></span>`;
   }
   els.piano.innerHTML = html;
+  // The innerHTML swap drops transient key classes: restore held-key highlights
+  // and force the playback highlighter to re-mark sounding keys on the next frame.
+  for (const p of liveVoices.keys()) keyEl(p)?.classList.add("down");
+  playingPitches = new Set();
+}
+/** Rebuild the piano only when the fitting octave count actually changed — avoids
+ *  wiping key state on every resize tick that doesn't cross an octave threshold. */
+function rebuildPianoIfNeeded(): void {
+  if (pianoOctaveCount() !== pianoOcts) buildPiano();
 }
 /** Center note the map plays with no key held (middle C at shift 0). */
 function updateOctLabel(): void { els.octLabel.textContent = `Center ${noteName(60 + octaveShift * 12)}`; }
@@ -1539,6 +1575,17 @@ els.projectFile.addEventListener("change", async () => {
 };
 els.voiceRow.style.display = els.gm.checked ? "none" : "flex";
 buildPiano();
+// Refit the piano's octave count whenever its available width changes. Observing
+// the element itself is more reliable than the window 'resize' event: it also
+// covers the initial layout (clientWidth can read 0 before first layout) and any
+// container change, and always fires after layout so clientWidth is current.
+// Rebuilding only swaps child keys, which never changes the element's own
+// content-box width, so this can't feed back into a resize loop.
+if (typeof ResizeObserver !== "undefined") {
+  new ResizeObserver(rebuildPianoIfNeeded).observe(els.piano);
+} else {
+  requestAnimationFrame(rebuildPianoIfNeeded);
+}
 updateOctLabel();
 initMidi();
 const restored = loadLastSession();
