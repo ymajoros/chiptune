@@ -155,7 +155,7 @@ export function defaultChannelMix(): ChannelMix {
   return { volume: 1, mute: false, solo: false, sends: {} };
 }
 
-/** A modulated-delay chorus (the shimmery, doubled Cure/80s sound). */
+/** A modulated-delay chorus (the shimmery, doubled 80s sound). */
 export interface Chorus {
   rate: number; // LFO rate, Hz (~0.1..6)
   depth: number; // 0..1 modulation depth (mapped to a few ms of delay sweep)
@@ -705,7 +705,7 @@ class StreamPingPong {
 // Three LFO-modulated fractional delay lines tapped off a shared circular
 // buffer, phase-spread and panned across the stereo field. Each voice sweeps a
 // short base delay (~18 ms) by a few ms; summing the detuned copies gives the
-// thick, shimmering doubling that defines the Cure's guitars/synths. Wet only:
+// thick, shimmering doubling of classic 80s chorus'd guitars/synths. Wet only:
 // renderBlock adds mix*wet into L/R just like the reverb/delay send buses.
 class StreamChorus {
   private buf: Float32Array;

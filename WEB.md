@@ -11,8 +11,8 @@ npm install        # dev-only: installs esbuild (the bundler). Nothing else.
 npm run serve      # builds + watches + serves http://127.0.0.1:8080/
 ```
 
-Open <http://127.0.0.1:8080/>. The bundled song (Chiptune demo) loads and
-renders immediately; press **Play**.
+Open <http://127.0.0.1:8080/>. The bundled demo (an original CC0 Am–F–C–G loop)
+loads and renders immediately; press **Play**.
 
 One-off build without the server:
 

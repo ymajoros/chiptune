@@ -24,7 +24,7 @@ Two causes, both real:
    Real articulators move in ~50 ms whatever the vowel's length.
 2. **The R was in the wrong syllable.** The syllabifier made every consonant the
    onset of the following vowel, so `p a R s a` → /pa.**ʁ**sa/ — the R leading
-   *into* "ça". It could not express a coda. Fixed with explicit `.` boundaries:
+   *into* "sa". It could not express a coda. Fixed with explicit `.` boundaries:
    /paʁ.sa/.
 
 ### "a **uh uh uh**" — silence was a formant target

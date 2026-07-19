@@ -12,7 +12,9 @@
 import { writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { parseMidi, type Song, type Note } from "./midiParse.ts";
-import { song as bundledSong } from "./songData.ts";
+// Default bundled song for the CLI: the original CC0 demo loop (web/demoSong.ts).
+// No copyrighted note data ships in the repo; pass a .mid path to play your own.
+import { song as bundledSong } from "./web/demoSong.ts";
 import { gmVoice, GM_NAMES } from "./gm.ts";
 import { renderDrum } from "./drums.ts";
 

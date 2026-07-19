@@ -9,10 +9,10 @@
  * The syllable count + melismas must total exactly (last - first) notes;
  * voice.ts errors loudly with the arithmetic if they don't.
  *
- * The VERSE lyrics here are original text written as a phonetic test bench, not
- * the recording's words. They are deliberately loaded with the things that have
- * been hard: nasal vowels, uvular R, the /s S f v z Z/ set, stop bursts + VOT,
- * codas, and melismas on the held notes.
+ * All lyrics here (verse AND chorus) are original text written as a phonetic
+ * test bench, not any recording's words. They are deliberately loaded with the
+ * things that have been hard: nasal vowels, uvular R, the /s S f v z Z/ set,
+ * stop bursts + VOT, codas, and melismas on the held notes.
  */
 
 export interface Section {
@@ -23,24 +23,28 @@ export interface Section {
   lyrics: string; // phonemes
 }
 
-/** "Je vois la mer ..." — the refrain, 32 notes. */
+/**
+ * Chorus — ORIGINAL test text on the refrain melody (32 notes). Like the verse,
+ * these are original words written from scratch as a phonetic bench, matched to
+ * the melody's syllable/melisma structure (not any recording's words).
+ */
 export const CHORUS: Section = {
   name: "chorus",
   first: 65,
   last: 97,
   text: "Je vois la mer, je vois la mer, je vois la mer / loin là, où va le vent / le temps s'en va / sans bruit ni fiiin",
   lyrics: [
-    "Z @ . v w a . l a . m E R .", //  je vois la mer          65-68
-    "Z @ . v w a . l a . m E R .", //  je vois la mer          69-72
-    "Z @ . v w a . l a . m E R .", //  je vois la mer          73-76
-    "l w E~ . - l a -", //          par sa  /paʁ.sa/    77-80
-    "u . v a . l @ . v A~ - .", //     à un le vent          81-85
-    "l @ . t A~ .", //            le temps               86-87
-    "s A~ . v a .", //             vrai-ment               88-89
-    "s k @ .", //                    c'que (elided /skə/)    90
-    "d i z .", //                    disent /diz/, no schwa  91
-    "l e .", //                      les                     92
-    "f E~ - - - .", //             fiiiin (3 melismas)  93-96
+    "Z @ . v w a . l a . m E R .", //  je vois la mer         65-68
+    "Z @ . v w a . l a . m E R .", //  je vois la mer         69-72
+    "Z @ . v w a . l a . m E R .", //  je vois la mer         73-76
+    "l w E~ . - l a -", //             loin... là (2 melisma) 77-80
+    "u . v a . l @ . v A~ - .", //     où va le vent          81-85
+    "l @ . t A~ .", //                 le temps               86-87
+    "s A~ . v a .", //                 s'en va                88-89
+    "s A~ .", //                       sans                   90
+    "b R w i .", //                    bruit                  91
+    "n i .", //                        ni                     92
+    "f E~ - - - .", //                 fiiin (3 melismas)     93-96
   ].join(" "),
 };
 

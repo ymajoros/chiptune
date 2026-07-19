@@ -73,7 +73,7 @@ def write_wav(buf, path):
 
 if __name__ == "__main__":
     midi_path = sys.argv[1] if len(sys.argv) > 1 else \
-        f"{__import__('os').path.expanduser('~')}/Downloads/Patrick_singer_Qui_A_Le_Droit.mid"
+        f"{__import__('os').path.expanduser('~')}/Downloads/input.mid"
     song = parse_midi(midi_path)
     pitched = [n for n in song["notes"] if not (DROP_DRUMS and n.channel == 9)]
     print(f"{len(song['notes'])} notes ({len(pitched)} pitched after dropping drums), "

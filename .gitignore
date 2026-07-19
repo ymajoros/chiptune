@@ -1,3 +1,10 @@
+# local, copyrighted song/lyric data — NEVER commit or publish. The singing-synth
+# (chorus.ts / karSing.ts) reads these locally; the web player never imports them
+# (it uses the CC0 web/demoSong.ts). Regenerate your own with genSongData.mjs /
+# genLyrics.ts from a .mid/.kar you have the rights to.
+songData.ts
+songLyrics.ts
+
 # generated audio
 *.wav
 # generated intermediates
