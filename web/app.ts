@@ -349,17 +349,24 @@ function migrateLegacyOverrides(old: Record<string, VoiceOverride>): void {
   }
 }
 
-/** <option> list for the instrument dropdown: a Custom optgroup (if any) + all GM. */
+/** <option> list for the instrument dropdown: a Custom optgroup (if any) + all GM.
+ *  Each option carries its synthesis-engine chip INSIDE the listbox — a coloured
+ *  emoji icon + short abbr prefix the name and the option text is tinted the engine
+ *  colour, so you can read/scan the list by engine without a separate chip beside it. */
 function instrumentOptionsHtml(selected: string): string {
+  const opt = (value: string, label: string): string => {
+    const k = engineOfSelection(value);
+    const m = ENGINE_META[k];
+    // Native <option>s can't hold styled markup, so the engine "chip" is an emoji
+    // square (ENGINE_ICON) tinted to the engine colour, then the short abbr, then
+    // the instrument name — e.g. "🟦 FM  56 Trumpet". Text colour still tints it too.
+    return `<option value="${value}"${selected === value ? " selected" : ""} style="color:${m.color}">${ENGINE_ICON[k]} ${m.abbr}  ${esc(label)}</option>`;
+  };
   const customs = Object.values(customInstruments);
   const customGroup = customs.length
-    ? `<optgroup label="Custom">${customs
-        .map((ci) => `<option value="custom:${ci.id}"${selected === `custom:${ci.id}` ? " selected" : ""}>${esc(ci.name)}</option>`)
-        .join("")}</optgroup>`
+    ? `<optgroup label="Custom">${customs.map((ci) => opt(`custom:${ci.id}`, ci.name)).join("")}</optgroup>`
     : "";
-  const gmGroup = `<optgroup label="General MIDI">${GM_NAMES
-    .map((nm, i) => `<option value="gm:${i}"${selected === `gm:${i}` ? " selected" : ""}>${i} ${esc(nm)}</option>`)
-    .join("")}</optgroup>`;
+  const gmGroup = `<optgroup label="General MIDI">${GM_NAMES.map((nm, i) => opt(`gm:${i}`, `${i} ${nm}`)).join("")}</optgroup>`;
   return customGroup + gmGroup;
 }
 /** The per-mixer-row instrument dropdown, selected to the channel's instrument. */
@@ -409,6 +416,8 @@ const scheduled = new Set<AudioBufferSourceNode>();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const els = {
   file: $("file") as HTMLInputElement,
+  fileName: $("fileName") as HTMLElement,
+  projectFileName: $("projectFileName") as HTMLElement,
   songName: $("songName"),
   play: $("play") as HTMLButtonElement,
   stop: $("stop") as HTMLButtonElement,
@@ -737,6 +746,9 @@ const MIN_NOTE_H = 2;         // device-px floor for a note's height (× dpr)
 let zoomX = 1, zoomY = 1;
 let panX = 0, panY = 0;
 let panning = false;          // a pan-drag is in progress (suppresses hover/auto-follow)
+// Which channel's mixer row is currently hovered (null = none). When set, drawRoll
+// glows that channel's notes and dims the rest — the roll's mirror of the row hover.
+let hoverChannel: number | null = null;
 
 // Pitched notes + pitch extent, cached per song (rebuilt when `song` changes) so
 // hover hit-testing (per mousemove) and drawing don't re-filter every call.
@@ -812,9 +824,31 @@ function drawRoll(): void {
     if (y > H || y + noteH < 0) continue;
     const m = mixer.get(`${n.track}:${n.channel}`);
     const silent = m && (solo ? !m.solo : m.mute);
-    g.fillStyle = CH_COLORS[n.channel % 16];
-    g.globalAlpha = silent ? 0.18 : 0.85;
-    g.fillRect(x, y, w, noteH);
+    // Row-hover emphasis: when a mixer row is hovered, its channel's notes glow at
+    // full brightness while every other note is dimmed. This combines cleanly with
+    // solo dimming — a note that's both non-soloed and non-hovered simply dims once.
+    const hovered = hoverChannel !== null && n.channel === hoverChannel;
+    const dim = silent || (hoverChannel !== null && !hovered);
+    const color = CH_COLORS[n.channel % 16];
+    g.fillStyle = color;
+    if (hovered) {
+      // Cheap "glow": a translucent same-colour halo behind the note + a bright
+      // outline. NOT canvas shadowBlur — that runs a per-note gaussian every
+      // animation frame (drawRoll repaints each frame for the playhead), which
+      // starved the audio thread and caused under-runs on busy songs. fillRect/
+      // strokeRect are ~free by comparison, so the highlight stays smooth.
+      const gpad = 2 * dpr;
+      g.globalAlpha = 0.3;
+      g.fillRect(x - gpad, y - gpad, w + 2 * gpad, noteH + 2 * gpad);
+      g.globalAlpha = 1;
+      g.fillRect(x, y, w, noteH);
+      g.strokeStyle = "rgba(255,255,255,0.9)";
+      g.lineWidth = dpr;
+      g.strokeRect(x + 0.5, y + 0.5, Math.max(w - 1, 0), Math.max(noteH - 1, 0));
+    } else {
+      g.globalAlpha = dim ? 0.18 : 0.85;
+      g.fillRect(x, y, w, noteH);
+    }
   }
   g.globalAlpha = 1;
   // scroll indicators — thin bars showing the visible window vs. the content
@@ -909,6 +943,7 @@ const SOLO_HINT = "Solo — click: toggle · double-click: clear all solos";
  *  song load, effect add/remove, and whenever the ◀/▶ effect pager moves. */
 function buildTracksTable(): void {
   const chans = chanInfos;
+  hoverChannel = null; // the hovered <tr> is about to be replaced — drop the stale highlight
   clampFxPage();
   const start = fxPage * FX_PAGE_SIZE;
   const pageFx = fxStack.slice(start, start + FX_PAGE_SIZE);
@@ -924,8 +959,9 @@ function buildTracksTable(): void {
     const instCore = c.isDrum
       ? `<span class="filelabel">Drum kit</span>`
       : instrumentSelectHtml(c.key);
-    // colour chip in front of the dropdown flags the channel's synthesis engine
-    const inst = `<span class="instcell">${engineChipHtml(c)}${instCore}</span>`;
+    // the engine chip now lives INSIDE the dropdown (coloured/labelled options);
+    // the closed <select> is tinted to its engine colour by refreshEngineChips().
+    const inst = `<span class="instcell">${instCore}</span>`;
     // effect-send cells for the visible FX columns (0 stored as an absent key)
     const fxCells = pageFx
       .map((f) => {
@@ -933,8 +969,11 @@ function buildTracksTable(): void {
         return `<td class="fxcol"><input type="range" data-mx="1" data-k="${c.key}" data-fxid="${f.id}" min="0" max="1" step="0.05" value="${val}"/><span class="cellval" id="mx-${c.key}-${f.id}">${val.toFixed(2)}</span></td>`;
       })
       .join("");
-    return `<tr data-key="${c.key}">
-      <td>${c.track}</td>
+    // Trk # carries the same per-channel colour the piano roll paints its notes with.
+    const rollColor = CH_COLORS[c.channel % 16];
+    // data-ch lets the hover handler map a row → channel; --rowcolor tints the row glow.
+    return `<tr data-key="${c.key}" data-ch="${c.channel}" style="--rowcolor:${rollColor}">
+      <td><span class="trkswatch" style="background:${rollColor}"></span>${c.track}</td>
       <td>${c.channel + 1}${c.isDrum ? " (drum)" : ""}</td>
       <td>${inst}</td>
       <td><input type="range" data-k="${c.key}" data-f="gain" min="0.1" max="2" step="0.05" value="${gain}" ${c.isDrum ? "disabled" : ""}/><span class="cellval" id="gain-${c.key}">${gain.toFixed(2)}</span></td>
@@ -950,6 +989,7 @@ function buildTracksTable(): void {
     <th>Trk</th><th>Ch</th><th>Instrument</th><th>Gain</th><th>Volume</th><th>Mute</th><th>Solo</th><th></th>${fxHead}
   </tr></thead><tbody>${rows.join("")}</tbody></table>`;
   // (instrument dropdowns render their own selection inline via instrumentSelectHtml)
+  refreshEngineChips(); // tint each closed <select> to its engine colour
   updateFxPager();
 }
 
@@ -1184,12 +1224,47 @@ els.tracks.addEventListener("dblclick", (e) => {
   if (field === "mute" || field === "solo") clearAllMix(field);
 });
 
+/** Point the roll's `hoverChannel` at whichever mixer row `el` sits in (null when
+ *  `el` is outside the rows), redrawing only when it actually changes so hover
+ *  never triggers redundant repaints. */
+function setHoverFromEl(el: EventTarget | null): void {
+  const tr = el instanceof Element ? el.closest("tr[data-ch]") : null;
+  const ch = tr ? Number((tr as HTMLElement).dataset.ch) : null;
+  if (ch === hoverChannel) return; // no change → skip the redraw
+  hoverChannel = ch;
+  drawRoll(); // repaint the roll so the hovered channel's notes glow / others dim
+}
+// Hovering a mixer row glows the row (CSS :hover) and its channel's notes in the
+// roll above. Delegated pointerover/out mirror the row under the pointer; pointerout
+// reads relatedTarget so row→row moves resolve in one redraw and leaving the table clears.
+els.tracks.addEventListener("pointerover", (e) => setHoverFromEl(e.target));
+els.tracks.addEventListener("pointerout", (e) => setHoverFromEl((e as PointerEvent).relatedTarget));
+
 // ---- instrument editor ----
 function engineOf(v: Voice): EngineType {
   if (v.ks) return "ks";
   if (v.formant) return "formant";
   if (v.sub) return "sub";
   if (v.fm) return "fm";
+  return "additive";
+}
+
+/** Engine key for a dropdown selection ("gm:<n>" | "custom:<id>") — used to tint /
+ *  label its <option>. A custom instrument's edit may swap the engine; otherwise it
+ *  inherits its base GM program's engine. */
+function engineOfSelection(sel: string): EngineType {
+  if (sel.startsWith("custom:")) {
+    const ci = customInstruments[sel.slice(7)];
+    if (!ci) return "additive";
+    const e = ci.edits as Partial<Voice>;
+    if (e.ks) return "ks";
+    if (e.formant) return "formant";
+    if (e.sub) return "sub";
+    if (e.fm) return "fm";
+    if (e.harmonics) return "additive";
+    return engineOf(gmVoice(ci.program));
+  }
+  if (sel.startsWith("gm:")) return engineOf(gmVoice(Number(sel.slice(3)) || 0));
   return "additive";
 }
 
@@ -1226,29 +1301,31 @@ const ENGINE_META: Record<EngineChipKey, { abbr: string; name: string; color: st
   additive: { abbr: "Add", name: "Additive (harmonics)",    color: "#8b93a7" }, // slate
   drums:    { abbr: "Drm", name: "Drums (percussion)",      color: "#ec5b64" }, // red
 };
+// A native <select>/<option> can only hold plain text — no HTML, no styled
+// sub-elements, no background pills — so the per-engine "chip icon" inside the
+// listbox has to be a coloured emoji glyph. Each square is the emoji whose hue
+// best matches ENGINE_META[k].color, prefixed before the abbr + instrument name.
+const ENGINE_ICON: Record<EngineChipKey, string> = {
+  ks:       "🟩", // green  ~ #3fb96a
+  fm:       "🟦", // blue   ~ #4a86ff
+  sub:      "🟧", // amber  ~ #f0a13c
+  formant:  "🟪", // purple ~ #b06cf0
+  additive: "⬜", // slate  ~ #8b93a7
+  drums:    "🟥", // red    ~ #ec5b64
+};
 /** The engine-chip key for a channel: its resolved engine, or "drums" for percussion. */
 function engineChipKey(c: ChanInfo): EngineChipKey {
   return c.isDrum ? "drums" : resolveVoice(c.key).engine;
 }
-/** Chip markup for a mixer row (coloured dot + short label, full engine name in the tooltip). */
-function engineChipHtml(c: ChanInfo): string {
-  const k = engineChipKey(c);
-  const m = ENGINE_META[k];
-  return `<span class="engchip" id="engchip-${c.key}" data-eng="${k}" style="--eng:${m.color}" title="Engine: ${esc(m.name)}"><span class="engdot"></span><span class="englabel">${m.abbr}</span></span>`;
-}
-/** Re-colour every mixer row's engine chip in place (label + colour + tooltip) —
- *  used after a channel's instrument or engine changes without a table rebuild. */
+/** Tint each mixer row's instrument <select> to its resolved engine colour, so the
+ *  closed control shows the engine at a glance (matching its coloured options). The
+ *  engine "chip" thus lives inside the listbox rather than as a separate element.
+ *  Called after a channel's instrument or engine changes without a table rebuild. */
 function refreshEngineChips(): void {
   for (const c of chanInfos) {
-    const el = document.getElementById(`engchip-${c.key}`);
-    if (!el) continue;
-    const k = engineChipKey(c);
-    const m = ENGINE_META[k];
-    el.dataset.eng = k;
-    el.style.setProperty("--eng", m.color);
-    el.title = `Engine: ${m.name}`;
-    const lbl = el.querySelector<HTMLElement>(".englabel");
-    if (lbl) lbl.textContent = m.abbr;
+    if (c.isDrum) continue;
+    const sel = els.tracks.querySelector<HTMLSelectElement>(`select[data-inst="1"][data-k="${c.key}"]`);
+    if (sel) sel.style.color = ENGINE_META[engineChipKey(c)].color;
   }
 }
 /** Populate the one-line colour→engine legend shown above the mixer table. */
@@ -1281,8 +1358,8 @@ function renderInstrumentEditor(): void {
   const instName = instrumentName(key);
 
   const common = `<div class="grid">
-    ${NUM("Attack (ms)", key, "attack", "", Math.round((voice.attack ?? 0.005) * 1000), 0, 500, 1)}
-    ${NUM("Release (ms)", key, "release", "", Math.round((voice.release ?? 0.03) * 1000), 0, 1000, 1)}
+    ${NUM("Attack (ms)", key, "attack", "", Math.round((Number.isFinite(voice.attack) ? voice.attack! : 0.005) * 1000), 0, 2000, 1)}
+    ${NUM("Release (ms)", key, "release", "", Math.round((Number.isFinite(voice.release) ? voice.release! : 0.03) * 1000), 0, 5000, 1)}
     ${NUM("Gain", key, "gain", "", +(voice.gain ?? 1).toFixed(2), 0.1, 3, 0.05)}
     ${NUM("Fold above (0=off)", key, "foldAbove", "", voice.foldAbove ?? 0, 0, 108, 1)}
   </div>`;
@@ -1401,8 +1478,8 @@ els.instEditor.addEventListener("input", (e) => {
   const key = t.dataset.k!, field = t.dataset.f!, sub = t.dataset.s!;
   const ov = ovForEdit(key);
   const out = els.instEditor.querySelector<HTMLElement>(`[data-out="${field}.${sub}"]`);
-  if (field === "attack") { ov.attack = Number(t.value) / 1000; }
-  else if (field === "release") { ov.release = Number(t.value) / 1000; }
+  if (field === "attack") { const n = Number(t.value); ov.attack = Number.isFinite(n) ? Math.max(0, n) / 1000 : 0.005; }
+  else if (field === "release") { const n = Number(t.value); ov.release = Number.isFinite(n) ? Math.max(0, n) / 1000 : 0.03; }
   else if (field === "gain") { ov.gain = Number(t.value); syncGainControls(key, ov.gain); }
   else if (field === "foldAbove") { const n = Number(t.value); if (n <= 0) delete ov.foldAbove; else ov.foldAbove = n; }
   else if (field === "sympathetic") {
@@ -2051,6 +2128,7 @@ els.saveCfg.addEventListener("click", () => { saveConfig(); els.cfgStatus.textCo
 els.file.addEventListener("change", async () => {
   const f = els.file.files?.[0];
   if (!f) return;
+  els.fileName.textContent = f.name; // show the WHOLE filename (native input truncates it)
   try {
     const ab = await f.arrayBuffer();
     const s = parseMidiBuffer(ab);
@@ -2104,6 +2182,7 @@ els.saveProject.addEventListener("click", () => {
 els.projectFile.addEventListener("change", async () => {
   const f = els.projectFile.files?.[0];
   if (!f) return;
+  els.projectFileName.textContent = f.name; // full filename (native input truncates it)
   try {
     const session = JSON.parse(await f.text()) as Session;
     if (session.format !== SESSION_FORMAT || !session.song || !Array.isArray(session.song.notes)) {

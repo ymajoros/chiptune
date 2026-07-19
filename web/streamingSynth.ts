@@ -40,6 +40,7 @@ import {
   seedString,
   BODY_MODES,
   BODY_NORM,
+  ENGINE_MAKEUP,
 } from "../synth.ts";
 import { renderDrum } from "../drums.ts";
 
@@ -50,6 +51,9 @@ const midiToHz = (pitch: number): number => 440 * 2 ** ((pitch - 69) / 12);
 // the whole song to peak-normalize (offline's masterGain), so we use a static
 // gain and let the compressor + limiter control the ceiling.
 export const MASTER_GAIN = 1.25;
+
+// Per-engine loudness makeup (ENGINE_MAKEUP) is defined in synth.ts and imported
+// below, so the offline and streaming engines share one source of truth.
 const LIMITER: { threshold: number; ratio: number; attack: number; release: number } = {
   threshold: -1,
   ratio: 20,
@@ -250,6 +254,7 @@ export class PitchedVoice implements RtVoice {
   private bodyC?: (Biquad & { g: number })[]; // modal body resonator bank
   private bodyState?: Float64Array; // [x1,x2,y1,y2] per body mode
   private ampStage?: AmpStage; // guitar amp + cabinet voicing
+  private mk = 1; // per-engine loudness makeup (see ENGINE_MAKEUP)
 
   constructor(note: Note, v: Voice, vib: Vibrato | undefined, chanKey: string, firstOffset: number) {
     this.chanKey = chanKey;
@@ -258,8 +263,8 @@ export class PitchedVoice implements RtVoice {
     this.v = v;
     this.vib = vib;
     this.n = Math.max(Math.floor(note.dur * SR), 1);
-    this.a = Math.min(Math.floor(v.attack * SR), this.n >> 1);
-    this.r = Math.min(Math.floor(v.release * SR), this.n >> 1);
+    this.a = this.envSamples(v.attack);
+    this.r = this.envSamples(v.release);
     let pitch = note.pitch;
     if (v.foldAbove) while (pitch > v.foldAbove) pitch -= 12;
     const freq = midiToHz(pitch);
@@ -316,6 +321,7 @@ export class PitchedVoice implements RtVoice {
       this.engine = "add";
     }
     if (v.amp) this.ampStage = new AmpStage(v.amp);
+    this.mk = ENGINE_MAKEUP[this.engine as keyof typeof ENGINE_MAKEUP] ?? 1;
   }
 
   private initUnison(voices: number, detune: number, freq: number): void {
@@ -327,6 +333,17 @@ export class PitchedVoice implements RtVoice {
       this.baseIncs[vv] = (freq * 2 ** ((spread * detune) / 1200)) / SR;
       this.phases[vv] = vv / nv;
     }
+  }
+
+  /**
+   * Attack/release length in samples, clamped to the note. Guards against a
+   * non-finite/negative attack/release (a NaN would poison env() and, via
+   * release(), make `n` NaN so the note never ends) and uses /2 rather than a
+   * 32-bit `>> 1` (which overflows to a negative on very long held notes).
+   */
+  private envSamples(sec: number): number {
+    const s = Number.isFinite(sec) ? Math.max(0, sec) : 0;
+    return Math.min(Math.floor(s * SR), Math.floor(this.n / 2));
   }
 
   /**
@@ -355,8 +372,8 @@ export class PitchedVoice implements RtVoice {
   updateVoice(v: Voice): void {
     if (voiceEngine(v) !== this.engine) return;
     this.v = v; // fm/sub/etc. params are read from this.v every block -> live
-    this.a = Math.min(Math.floor(v.attack * SR), this.n >> 1);
-    this.r = Math.min(Math.floor(v.release * SR), this.n >> 1);
+    this.a = this.envSamples(v.attack);
+    this.r = this.envSamples(v.release);
     this.amp = (this.note.velocity / 127) ** 1.5 * 0.25 * safeGain(v.gain);
     // KS: the per-sample loop coefficients (damping, decay) are safe to change on
     // a ringing note, so a held note responds live to those knobs. Tuning/dispersion
@@ -386,7 +403,7 @@ export class PitchedVoice implements RtVoice {
 
   render(scratch: Float32Array, start: number, count: number): void {
     const end = start + count;
-    const amp = this.amp;
+    const amp = this.amp * this.mk;
     const vib = this.vib;
     switch (this.engine) {
       case "add": {
@@ -442,7 +459,7 @@ export class PitchedVoice implements RtVoice {
             if (ph >= 1) ph -= 1;
             this.phases[vv] = ph;
           }
-          s /= nv;
+          s /= Math.sqrt(nv); // energy-preserving unison sum (detuned voices are decorrelated; 1/nv would drop ~sqrt(nv) of loudness)
           if (drive > 1) { const d = s * drive + 0.2; const c = d <= -1 ? -1 : d >= 1 ? 1 : 1.5 * d - 0.5 * d * d * d; s = c - 0.16; } // cubic soft-clip overdrive, pre-filter
           let fc = sub.cutoff + sub.envAmount * Math.exp(-this.k / envDecaySamples);
           if (fc > SR / 6) fc = SR / 6;
@@ -475,7 +492,7 @@ export class PitchedVoice implements RtVoice {
             if (ph >= 1) ph -= 1;
             this.phases[vv] = ph;
           }
-          s /= nv;
+          s /= Math.sqrt(nv); // energy-preserving unison sum (detuned voices are decorrelated; 1/nv would drop ~sqrt(nv) of loudness)
           // lip-radiation pre-emphasis (mirrors renderFormant in synth.ts): +6 dB/oct
           // tilt so the upper formants speak — the vowel reads bright/present, not low.
           { const d = s - FORMANT_PREEMPH * this.fPrev; this.fPrev = s; s = d * FORMANT_PREEMPH_MAKEUP; }
