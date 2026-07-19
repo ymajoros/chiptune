@@ -66,9 +66,26 @@ const PRESETS: Preset[] = [
   { name: "Vox (formant)", timbre: { formant: FORMANT_VOICES.vox } },
 ];
 
+// ---- shared instrument library (new model) ----
+// An instrument is a unique, reusable thing: a GM base program plus a set of
+// voice `edits` (the VoiceOverride minus `program`). A channel *selects* an
+// instrument — either a pristine GM one ("gm:<n>") or a custom one
+// ("custom:<id>"). Editing a channel's instrument edits the SHARED instrument,
+// so every channel selecting it changes together (see editTargetEdits).
+interface CustomInstrument {
+  id: string;
+  name: string;
+  program: number; // GM base 0..127
+  edits: VoiceOverride; // VoiceOverride minus `program`
+}
+
 // ---- persisted per-song config ----
 interface SongConfig {
-  voiceOverrides: Record<string, VoiceOverride>;
+  // new model
+  customInstruments?: Record<string, CustomInstrument>;
+  channelInstrument?: Record<string, string>; // "track:channel" -> "gm:<n>" | "custom:<id>"
+  // legacy shape (pre-shared-instruments) — migrated on load, never written back
+  voiceOverrides?: Record<string, VoiceOverride>;
   mixer: Record<string, ChannelMix>;
   fx?: FxInstance[]; // dynamic effects rack (absent in legacy configs -> migrated)
 }
@@ -177,10 +194,207 @@ let songName = BUNDLED_SONG_LABEL;
 let songId = "";
 let synth: StreamingSynth | null = null;
 
+// `voiceOverrides` is now a DERIVED cache: rebuilt from the instrument model
+// (customInstruments + channelInstrument) by rebuildVoiceOverrides(). It is what
+// the streaming synth consumes (buildOptions) and what resolveVoice/the editor
+// read, so preview == playback. The model below is the source of truth.
 const voiceOverrides: Record<string, VoiceOverride> = {};
+let customInstruments: Record<string, CustomInstrument> = {};
+let channelInstrument: Record<string, string> = {};
+let instIdSeq = 1;
+function newInstrumentId(): string { return `inst-${Date.now().toString(36)}-${instIdSeq++}`; }
+// The VoiceOverride fields that make up an instrument's `edits` (everything but program).
+const EDIT_FIELDS: (keyof VoiceOverride)[] = [
+  "gain", "attack", "release", "foldAbove", "harmonics", "fm", "sub", "ks", "formant", "sympathetic", "amp",
+];
+
 const mixer = new Map<string, ChannelMix>();
 let chanInfos: ChanInfo[] = [];
 let selectedKey: string | null = null;
+
+// ---- instrument model helpers ----
+/** The MIDI program a channel plays (from the song), used as its pristine GM base. */
+function channelProgram(key: string): number {
+  const c = chanInfos.find((x) => x.key === key);
+  return c ? c.program : 0;
+}
+/** A channel's current instrument selection ("gm:<n>" | "custom:<id>"); a channel
+ *  with no explicit selection defaults to the pristine GM of its MIDI program. */
+function effectiveSelection(key: string): string {
+  return channelInstrument[key] ?? `gm:${channelProgram(key)}`;
+}
+/** Deep clone an edits object so a channel's derived override never aliases the
+ *  stored instrument (edits are plain data: numbers / arrays / nested plains). */
+function cloneEdits(e: VoiceOverride): VoiceOverride {
+  return JSON.parse(JSON.stringify(e)) as VoiceOverride;
+}
+/** The VoiceOverride the synth/preview uses for a selection (program + edits). */
+function selectionToOverride(sel: string): VoiceOverride {
+  if (sel.startsWith("custom:")) {
+    const inst = customInstruments[sel.slice(7)];
+    if (inst) return { program: inst.program, ...cloneEdits(inst.edits) };
+  }
+  const n = sel.startsWith("gm:") ? (Number(sel.slice(3)) || 0) : 0;
+  return { program: n };
+}
+/** Rebuild the derived per-channel voiceOverrides from the instrument model. */
+function rebuildVoiceOverrides(): void {
+  for (const k of Object.keys(voiceOverrides)) delete voiceOverrides[k];
+  for (const c of chanInfos) {
+    if (c.isDrum) continue; // drums bypass voiceFor entirely — keep them out of the map
+    voiceOverrides[c.key] = selectionToOverride(effectiveSelection(c.key));
+  }
+}
+/** Display name of a channel's selected instrument (custom name, or GM name). */
+function instrumentName(key: string): string {
+  const sel = effectiveSelection(key);
+  if (sel.startsWith("custom:")) return customInstruments[sel.slice(7)]?.name ?? "Custom";
+  const n = sel.startsWith("gm:") ? (Number(sel.slice(3)) || 0) : 0;
+  return GM_NAMES[n] ?? `Program ${n}`;
+}
+/** Default name for a custom instrument forked from GM program `p`. */
+const forkBaseName = (p: number) => `${GM_NAMES[p] ?? `Program ${p}`} ✎`;
+/** Ensure a custom instrument's display name is unique (append " 2", " 3", …). */
+function uniqueInstrumentName(base: string): string {
+  const existing = new Set(Object.values(customInstruments).map((i) => i.name));
+  if (!existing.has(base)) return base;
+  for (let n = 2; ; n++) { const c = `${base} ${n}`; if (!existing.has(c)) return c; }
+}
+/** Deterministic stringify (sorted keys) — used to dedup identical migrated overrides. */
+function stableStringify(v: unknown): string {
+  if (v === null || typeof v !== "object") return JSON.stringify(v);
+  if (Array.isArray(v)) return `[${v.map(stableStringify).join(",")}]`;
+  const o = v as Record<string, unknown>;
+  return `{${Object.keys(o).sort().map((k) => `${JSON.stringify(k)}:${stableStringify(o[k])}`).join(",")}}`;
+}
+
+/**
+ * Return the `edits` object of the SHARED instrument a channel edits into.
+ * If the channel is on a pristine GM instrument, fork a new custom instrument
+ * from that GM base and migrate THIS channel plus every other channel currently
+ * resolving to the same gm:<n> onto it (the user's requirement: override a clean
+ * guitar → every track using it now uses the overridden one). A channel can
+ * still switch back to the pristine GM (or any instrument) via its dropdown.
+ */
+function editTargetEdits(key: string): VoiceOverride {
+  const sel = effectiveSelection(key);
+  if (sel.startsWith("custom:")) {
+    const inst = customInstruments[sel.slice(7)];
+    if (inst) return inst.edits;
+  }
+  // pristine gm:<n> (or a dangling selection) -> fork a shared custom instrument
+  const n = sel.startsWith("gm:") ? (Number(sel.slice(3)) || 0) : channelProgram(key);
+  const id = newInstrumentId();
+  const inst: CustomInstrument = { id, name: uniqueInstrumentName(forkBaseName(n)), program: n, edits: {} };
+  customInstruments[id] = inst;
+  const from = `gm:${n}`;
+  for (const c of chanInfos) {
+    if (c.isDrum) continue;
+    if (effectiveSelection(c.key) === from) channelInstrument[c.key] = `custom:${id}`;
+  }
+  channelInstrument[key] = `custom:${id}`; // ensure, even if key isn't in chanInfos
+  refreshInstrumentSelects(); // reflect the new instrument + migrated selections (drag-safe: leaves sliders alone)
+  return inst.edits;
+}
+
+/** Populate the instrument model from a (possibly legacy) config. */
+function loadInstrumentModel(cfg: Partial<SongConfig>): void {
+  customInstruments = {};
+  channelInstrument = {};
+  if (cfg.customInstruments !== undefined || cfg.channelInstrument !== undefined) {
+    for (const [id, raw] of Object.entries(cfg.customInstruments ?? {})) {
+      const r = (raw ?? {}) as Partial<CustomInstrument>;
+      if (typeof r !== "object") continue;
+      const program = typeof r.program === "number" && Number.isFinite(r.program)
+        ? Math.max(0, Math.min(127, r.program | 0)) : 0;
+      const edits: VoiceOverride = {};
+      const re = (r.edits ?? {}) as Record<string, unknown>;
+      for (const f of EDIT_FIELDS) if (re[f] !== undefined) (edits as Record<string, unknown>)[f] = re[f];
+      const name = typeof r.name === "string" && r.name ? r.name : (GM_NAMES[program] ?? `Program ${program}`);
+      customInstruments[id] = { id, name, program, edits };
+    }
+    for (const [k, v] of Object.entries(cfg.channelInstrument ?? {})) {
+      if (typeof v !== "string") continue;
+      if (v.startsWith("custom:") && !customInstruments[v.slice(7)]) continue; // orphan -> default gm
+      channelInstrument[k] = v;
+    }
+  } else if (cfg.voiceOverrides) {
+    migrateLegacyOverrides(cfg.voiceOverrides);
+  }
+}
+
+/** Migrate a legacy voiceOverrides map into the shared instrument model:
+ *  program-only (or empty) overrides become gm:<n> selections; overrides with
+ *  real edits become custom instruments (identical ones deduped into one). */
+function migrateLegacyOverrides(old: Record<string, VoiceOverride>): void {
+  const dedup = new Map<string, string>(); // signature -> instrument id
+  for (const [key, ovRaw] of Object.entries(old ?? {})) {
+    const ov = (ovRaw ?? {}) as Record<string, unknown>;
+    const program = typeof ov.program === "number" ? Math.max(0, Math.min(127, (ov.program as number) | 0)) : channelProgram(key);
+    const edits: VoiceOverride = {};
+    for (const f of EDIT_FIELDS) if (ov[f] !== undefined) (edits as Record<string, unknown>)[f] = ov[f];
+    if (Object.keys(edits).length === 0) {
+      // program-only override -> pristine GM selection (empty override -> leave default)
+      if (typeof ov.program === "number") channelInstrument[key] = `gm:${program}`;
+    } else {
+      const sig = `${program}|${stableStringify(edits)}`;
+      let id = dedup.get(sig);
+      if (!id) {
+        id = newInstrumentId();
+        customInstruments[id] = { id, name: uniqueInstrumentName(forkBaseName(program)), program, edits };
+        dedup.set(sig, id);
+      }
+      channelInstrument[key] = `custom:${id}`;
+    }
+  }
+}
+
+/** <option> list for the instrument dropdown: a Custom optgroup (if any) + all GM. */
+function instrumentOptionsHtml(selected: string): string {
+  const customs = Object.values(customInstruments);
+  const customGroup = customs.length
+    ? `<optgroup label="Custom">${customs
+        .map((ci) => `<option value="custom:${ci.id}"${selected === `custom:${ci.id}` ? " selected" : ""}>${esc(ci.name)}</option>`)
+        .join("")}</optgroup>`
+    : "";
+  const gmGroup = `<optgroup label="General MIDI">${GM_NAMES
+    .map((nm, i) => `<option value="gm:${i}"${selected === `gm:${i}` ? " selected" : ""}>${i} ${esc(nm)}</option>`)
+    .join("")}</optgroup>`;
+  return customGroup + gmGroup;
+}
+/** The per-mixer-row instrument dropdown, selected to the channel's instrument. */
+function instrumentSelectHtml(key: string): string {
+  return `<select data-k="${key}" data-inst="1">${instrumentOptionsHtml(effectiveSelection(key))}</select>`;
+}
+/** Re-render every mixer row's instrument dropdown in place (options + selection).
+ *  Touches only the <select>s, so an in-progress slider drag is undisturbed. */
+function refreshInstrumentSelects(): void {
+  for (const c of chanInfos) {
+    if (c.isDrum) continue;
+    const sel = els.tracks.querySelector<HTMLSelectElement>(`select[data-inst="1"][data-k="${c.key}"]`);
+    if (sel) sel.innerHTML = instrumentOptionsHtml(effectiveSelection(c.key));
+  }
+}
+/** Re-sync every mixer row's Gain slider/label from its resolved voice — used
+ *  after a shared-gain edit so sibling channels reflect the new value live. */
+function refreshInstrumentGainDisplays(): void {
+  for (const c of chanInfos) {
+    if (c.isDrum) continue;
+    const raw = Number(resolveVoice(c.key).voice.gain ?? 1);
+    const g = Number.isFinite(raw) ? raw : 1;
+    const slider = els.tracks.querySelector<HTMLInputElement>(`input[data-k="${c.key}"][data-f="gain"]`);
+    if (slider) slider.value = String(g);
+    const label = document.getElementById(`gain-${c.key}`);
+    if (label) label.textContent = g.toFixed(2);
+  }
+}
+/** Apply a mutation to the shared instrument a channel uses (forking on the first
+ *  edit of a pristine GM channel), then push it live and persist. */
+function applyInstrumentEdit(key: string, mutate: (edits: VoiceOverride) => void): void {
+  mutate(editTargetEdits(key));
+  applyOptions();
+  saveConfig();
+}
 
 let running = false;
 let offset = 0; // seconds; where playback (re)starts
@@ -274,8 +488,11 @@ function buildOptions(): WebRenderOptions {
   };
 }
 
-/** Push the current options into the streaming synth (live, no re-render). */
+/** Push the current options into the streaming synth (live, no re-render). The
+ *  derived per-channel voiceOverrides are rebuilt from the instrument model first
+ *  so the synth (and the editor preview) always see the current instruments. */
 function applyOptions(): void {
+  rebuildVoiceOverrides();
   if (synth) synth.setOptions(buildOptions());
 }
 
@@ -336,7 +553,7 @@ function songHash(s: Song, name: string): string {
 const cfgKey = (id: string) => `chiptune:cfg:${id}`;
 
 function saveConfig(): void {
-  const cfg: SongConfig = { voiceOverrides, mixer: Object.fromEntries(mixer), fx: fxStack };
+  const cfg: SongConfig = { customInstruments, channelInstrument, mixer: Object.fromEntries(mixer), fx: fxStack };
   try {
     localStorage.setItem(cfgKey(songId), JSON.stringify(cfg));
     els.cfgStatus.textContent = `Saved for “${songId}”`;
@@ -347,11 +564,19 @@ function saveConfig(): void {
  *  from an older build or a hand-edited .chip must never reach `.toFixed`). */
 function sanitizeConfig(cfg: SongConfig): SongConfig {
   const numFields = ["gain", "attack", "release", "foldAbove"] as const;
-  for (const o of Object.values(cfg.voiceOverrides ?? {})) {
+  const coerceNums = (rec: Record<string, unknown> | undefined) => {
+    if (!rec) return;
     for (const f of numFields) {
-      const rec = o as Record<string, unknown>;
       if (rec[f] !== undefined) { const n = Number(rec[f]); if (Number.isFinite(n)) rec[f] = n; else delete rec[f]; }
     }
+  };
+  // legacy per-channel overrides (migrated on load)
+  for (const o of Object.values(cfg.voiceOverrides ?? {})) coerceNums(o as Record<string, unknown>);
+  // custom instruments: clamp program, coerce their edits' numeric fields
+  for (const inst of Object.values(cfg.customInstruments ?? {})) {
+    const i = inst as { program?: unknown; edits?: Record<string, unknown> };
+    if (i.program !== undefined) { const n = Number(i.program); i.program = Number.isFinite(n) ? Math.max(0, Math.min(127, n | 0)) : 0; }
+    coerceNums(i.edits);
   }
   for (const m of Object.values(cfg.mixer ?? {})) {
     const rec = m as Record<string, unknown>;
@@ -369,7 +594,8 @@ function sanitizeConfig(cfg: SongConfig): SongConfig {
 }
 
 function loadConfig(): boolean {
-  for (const k of Object.keys(voiceOverrides)) delete voiceOverrides[k];
+  customInstruments = {};
+  channelInstrument = {};
   mixer.clear();
   let loaded = false;
   let loadedFx: FxInstance[] | undefined;
@@ -377,7 +603,7 @@ function loadConfig(): boolean {
     const raw = localStorage.getItem(cfgKey(songId));
     if (raw) {
       const cfg = sanitizeConfig(JSON.parse(raw) as SongConfig);
-      Object.assign(voiceOverrides, cfg.voiceOverrides ?? {});
+      loadInstrumentModel(cfg); // new model, or migrate a legacy voiceOverrides map
       loadedFx = cfg.fx;
       for (const [k, v] of Object.entries(cfg.mixer ?? {})) mixer.set(k, { ...defaultChannelMix(), ...v });
       loaded = true;
@@ -668,7 +894,6 @@ function buildEditor(): void {
  *  song load, effect add/remove, and whenever the ◀/▶ effect pager moves. */
 function buildTracksTable(): void {
   const chans = chanInfos;
-  const gmOptions = GM_NAMES.map((nm, i) => `<option value="${i}">${i} ${nm}</option>`).join("");
   clampFxPage();
   const start = fxPage * FX_PAGE_SIZE;
   const pageFx = fxStack.slice(start, start + FX_PAGE_SIZE);
@@ -683,7 +908,7 @@ function buildTracksTable(): void {
     const gain = Number.isFinite(gRaw) ? gRaw : 1; // never let a bad value crash .toFixed
     const inst = c.isDrum
       ? `<span class="filelabel">Drum kit</span>`
-      : `<select data-k="${c.key}" data-f="program">${gmOptions}</select>`;
+      : instrumentSelectHtml(c.key);
     // effect-send cells for the visible FX columns (0 stored as an absent key)
     const fxCells = pageFx
       .map((f) => {
@@ -705,15 +930,9 @@ function buildTracksTable(): void {
   });
 
   els.tracks.innerHTML = `<table><thead><tr>
-    <th>Trk</th><th>Ch</th><th>Instrument (GM)</th><th>Gain</th><th>Volume</th><th>Mute</th><th>Solo</th><th></th>${fxHead}
+    <th>Trk</th><th>Ch</th><th>Instrument</th><th>Gain</th><th>Volume</th><th>Mute</th><th>Solo</th><th></th>${fxHead}
   </tr></thead><tbody>${rows.join("")}</tbody></table>`;
-
-  // set each GM <select> to the current program
-  for (const c of chans) {
-    if (c.isDrum) continue;
-    const sel = els.tracks.querySelector<HTMLSelectElement>(`select[data-k="${c.key}"][data-f="program"]`);
-    if (sel) sel.value = String(voiceOverrides[c.key]?.program ?? c.program);
-  }
+  // (instrument dropdowns render their own selection inline via instrumentSelectHtml)
   updateFxPager();
 }
 
@@ -748,11 +967,11 @@ function buildFxRack(): void {
   }).join("");
 }
 
-/** GM / drum instrument name for a channel — used by the piano-roll hover tooltip. */
+/** Instrument name for a channel — used by the piano-roll hover tooltip. Shows the
+ *  selected instrument's name (custom name, or GM name), or "Drum kit". */
 function instLabel(c: ChanInfo): string {
   if (c.isDrum) return "Drum kit";
-  const prog = voiceOverrides[c.key]?.program ?? c.program;
-  return GM_NAMES[prog] ?? `Program ${prog}`;
+  return instrumentName(c.key);
 }
 
 /** Collapsed-header summary of the rack (visible even when the section is shut). */
@@ -847,10 +1066,6 @@ els.fxToggle.addEventListener("keydown", (e) => {
 });
 try { setFxCollapsed(localStorage.getItem(FX_COLLAPSE_KEY) === "1"); } catch { setFxCollapsed(false); }
 
-function ov(key: string): VoiceOverride {
-  return (voiceOverrides[key] ??= {});
-}
-
 // Gain appears in BOTH the mixer row and the instrument editor; keep the two in
 // sync so editing one doesn't leave the other showing a stale (misleading) value.
 function syncGainControls(key: string, val: number): void {
@@ -885,17 +1100,31 @@ els.tracks.addEventListener("input", (e) => {
   if (!key || !field) return;
   const val = Number(t.value);
   const m = mixer.get(key)!;
-  if (field === "gain") { ov(key).gain = val; syncGainControls(key, val); applyOptions(); }
+  if (field === "gain") {
+    // Voice gain is a property of the SHARED instrument (part of its edits): edit
+    // the instrument (forking a pristine GM one), then re-sync every channel that
+    // uses it so sibling rows show the new gain live.
+    applyInstrumentEdit(key, (edits) => { edits.gain = val; });
+    syncGainControls(key, val);
+    refreshInstrumentGainDisplays();
+    return; // applyInstrumentEdit already saved
+  }
   else if (field === "volume") { m.volume = val; ($(`vol-${key}`) as HTMLElement).textContent = val.toFixed(2); }
   saveConfig();
 });
 
 els.tracks.addEventListener("change", (e) => {
   const t = e.target as HTMLSelectElement;
-  if (t.dataset.f === "program") {
-    ov(t.dataset.k!).program = Number(t.value);
+  // instrument dropdown: select a GM ("gm:<n>") or custom ("custom:<id>") instrument
+  // for this channel. Switching never edits the instrument — it just repoints the
+  // channel (so a channel can always switch back to the pristine GM).
+  if (t.dataset.inst === "1") {
+    const key = t.dataset.k!;
+    channelInstrument[key] = t.value;
     applyOptions();
     saveConfig();
+    if (selectedKey === key) renderInstrumentEditor(); // reflect the newly selected instrument
+    return;
   }
 });
 
@@ -959,7 +1188,7 @@ function renderInstrumentEditor(): void {
   const key = selectedKey;
   const info = chanInfos.find((c) => c.key === key);
   const { voice, engine } = resolveVoice(key);
-  const gmName = GM_NAMES[voiceOverrides[key]?.program ?? info?.program ?? 0];
+  const instName = instrumentName(key);
 
   const common = `<div class="grid">
     ${NUM("Attack (ms)", key, "attack", "", Math.round((voice.attack ?? 0.005) * 1000), 0, 500, 1)}
@@ -1049,7 +1278,7 @@ function renderInstrumentEditor(): void {
 
   els.instEditor.innerHTML =
     `<div class="row"><strong>Track ${info?.track} · Ch ${(info?.channel ?? 0) + 1}</strong>
-       <span class="filelabel">GM: ${gmName} — change instrument or engine, edits are heard live &amp; on the keyboard below.</span></div>
+       <span class="filelabel">Instrument: ${esc(instName)} — edits change this instrument for every track using it, heard live &amp; on the keyboard below.</span></div>
      ${engineSel}${common}${params}${symHtml}${ampHtml}`;
 }
 
@@ -1060,8 +1289,10 @@ function harmRow(i: number, h: Harmonic): string {
     <button data-harm="del" data-i="${i}" style="padding:1px 8px;font-size:12px">×</button></div>`;
 }
 
-/** Read the override object for editing (create if absent). */
-function ovForEdit(key: string): VoiceOverride { return (voiceOverrides[key] ??= {}); }
+/** The edits object to mutate when editing a channel's instrument. Edits go to the
+ *  SHARED instrument the channel uses; the first edit of a pristine GM channel forks
+ *  a new custom instrument (and migrates its siblings) — see editTargetEdits. */
+function ovForEdit(key: string): VoiceOverride { return editTargetEdits(key); }
 
 /** Ensure the override carries a full engine config to mutate (seed from resolved voice). */
 function currentEngineConfig(key: string, engine: EngineType): FmConfig | SubConfig | KsConfig | FormantConfig | Harmonic[] {
@@ -1105,6 +1336,8 @@ els.instEditor.addEventListener("input", (e) => {
   if (out) out.textContent = t.value;
   applyOptions();
   saveConfig();
+  // gain is shared across the instrument's channels — keep sibling rows in sync
+  if (field === "gain") refreshInstrumentGainDisplays();
 });
 els.instEditor.addEventListener("change", (e) => {
   const t = e.target as HTMLSelectElement;
@@ -1442,21 +1675,24 @@ function openSong(newSong: Song, name: string, preset?: SongConfig): void {
   songName = name;
   songId = songHash(song, name);
   offset = 0;
+  // Resolve channels up front so instrument-model migration/rebuild can read each
+  // channel's MIDI program (buildEditor recomputes this; the values match).
+  chanInfos = channelsOf(song);
   let had: boolean;
   if (preset) {
     sanitizeConfig(preset);
-    for (const k of Object.keys(voiceOverrides)) delete voiceOverrides[k];
     mixer.clear();
-    Object.assign(voiceOverrides, preset.voiceOverrides ?? {});
+    loadInstrumentModel(preset); // new model, or migrate a legacy voiceOverrides map
     setFxStack(preset.fx); // rack from the project (or default), before seeding channels
     for (const [k, v] of Object.entries(preset.mixer ?? {})) mixer.set(k, { ...defaultChannelMix(), ...v });
     for (const m of mixer.values()) migrateMixSends(m); // migrate legacy sends
     for (const c of channelsOf(song)) if (!mixer.has(c.key)) mixer.set(c.key, newChannelMix(c));
-    saveConfig(); // persist the loaded project under its song id
+    saveConfig(); // persist the loaded project (in the new model) under its song id
     had = true;
   } else {
     had = loadConfig();
   }
+  rebuildVoiceOverrides(); // derive per-channel overrides from the instrument model
   // solo/mute are transient performance state — never carry them across a load,
   // or a persisted solo silences everything else and looks broken on refresh.
   for (const m of mixer.values()) { m.solo = false; m.mute = false; }
@@ -1498,10 +1734,12 @@ function loadLastSession(): { song: Song; songName: string } | null {
 
 function resetToDefaults(): void {
   try { localStorage.removeItem(cfgKey(songId)); } catch {}
-  for (const k of Object.keys(voiceOverrides)) delete voiceOverrides[k];
+  customInstruments = {};
+  channelInstrument = {};
   mixer.clear();
   setFxStack(undefined); // fresh default rack
   for (const c of channelsOf(song)) mixer.set(c.key, newChannelMix(c));
+  rebuildVoiceOverrides();
   if (synth) synth.setMixer(mixer);
   applyOptions();
   buildEditor();
@@ -1686,7 +1924,7 @@ els.roll.addEventListener("mouseleave", hideTip);
 function showTip(n: Note, ev: MouseEvent): void {
   const key = `${n.track}:${n.channel}`;
   const info = chanInfos.find((c) => c.key === key);
-  const inst = info ? instLabel(info) : (GM_NAMES[voiceOverrides[key]?.program ?? 0] ?? "Instrument");
+  const inst = info ? instLabel(info) : instrumentName(key);
   const tip = els.rollTip;
   tip.innerHTML = `<span class="tipkey">Trk ${n.track} · Ch ${n.channel + 1}</span> ${esc(inst)} · ${noteName(n.pitch)}`;
   tip.style.borderLeftColor = CH_COLORS[n.channel % 16];
@@ -1742,7 +1980,11 @@ interface Session {
   version: number;
   songName: string;
   song: Song;
-  voiceOverrides: Record<string, VoiceOverride>;
+  // new shared-instrument model
+  customInstruments?: Record<string, CustomInstrument>;
+  channelInstrument?: Record<string, string>;
+  // legacy shape (pre-shared-instruments) — migrated on load
+  voiceOverrides?: Record<string, VoiceOverride>;
   mixer: Record<string, ChannelMix>;
   fx?: FxInstance[]; // dynamic effects rack (absent in legacy .chip -> migrated)
 }
@@ -1753,7 +1995,8 @@ els.saveProject.addEventListener("click", () => {
     version: SESSION_VERSION,
     songName,
     song,
-    voiceOverrides,
+    customInstruments,
+    channelInstrument,
     mixer: Object.fromEntries(mixer),
     fx: fxStack,
   };
@@ -1777,7 +2020,9 @@ els.projectFile.addEventListener("change", async () => {
     }
     stopPlayback();
     openSong(session.song, session.songName || f.name, {
-      voiceOverrides: session.voiceOverrides ?? {},
+      customInstruments: session.customInstruments,
+      channelInstrument: session.channelInstrument,
+      voiceOverrides: session.voiceOverrides, // legacy .chip -> migrated by loadInstrumentModel
       mixer: session.mixer ?? {},
       fx: session.fx,
     });
@@ -1807,7 +2052,9 @@ els.projectFile.addEventListener("change", async () => {
     return Math.sqrt(s / n);
   },
   get mixer() { return mixer; },
-  get overrides() { return voiceOverrides; },
+  get overrides() { return voiceOverrides; }, // derived per-channel overrides fed to the synth
+  get instruments() { return customInstruments; }, // the shared custom-instrument library
+  get channelInstrument() { return channelInstrument; }, // per-channel selection
   get ctxState() { return ctx ? ctx.state : "none"; },
   get ctxTime() { return ctx ? ctx.currentTime : 0; },
   get transport() { return currentTime(); },
