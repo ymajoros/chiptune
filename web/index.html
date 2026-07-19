@@ -53,6 +53,24 @@
       select { background: var(--panel2); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; }
       .status { color: var(--accent); font-size: 13px; min-height: 18px; }
       canvas { width: 100%; height: 220px; display: block; border-radius: 8px; }
+      /* piano roll: zoom controls, scroll wrapper & hover tooltip */
+      .roll-controls { flex-wrap: nowrap; }
+      .roll-controls .rollzoom { display: inline-flex; align-items: center; gap: 4px; }
+      .roll-controls .zlabel { color: var(--muted); font-size: 12px; }
+      .roll-controls button { padding: 2px 9px; font-size: 13px; border-radius: 6px; min-width: 28px; }
+      .rollhint { font-size: 12px; }
+      #rollWrap { position: relative; touch-action: none; }
+      #roll { touch-action: none; }
+      .rolltip {
+        position: absolute; z-index: 5; pointer-events: none;
+        transform: translate(-50%, calc(-100% - 12px));
+        background: var(--panel2); color: var(--fg);
+        border: 1px solid var(--border); border-left: 3px solid var(--accent);
+        border-radius: 6px; padding: 4px 8px; font-size: 12px; white-space: nowrap;
+        box-shadow: 0 4px 14px rgba(0,0,0,0.45);
+      }
+      .rolltip[hidden] { display: none; }
+      .rolltip .tipkey { color: var(--muted); }
       table { width: 100%; border-collapse: collapse; font-size: 13px; }
       th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); }
       th { color: var(--muted); font-weight: 600; }
@@ -169,8 +187,23 @@
       </div>
 
       <div class="panel">
-        <h2>Piano roll</h2>
-        <canvas id="roll"></canvas>
+        <div class="row" style="justify-content: space-between; align-items: flex-start;">
+          <h2 style="margin:0;">Piano roll</h2>
+          <span class="row roll-controls" style="gap:6px;">
+            <span class="rollzoom"><span class="zlabel">Time</span>
+              <button id="rollTimeOut" title="Zoom out (time)">−</button>
+              <button id="rollTimeIn" title="Zoom in (time)">+</button></span>
+            <span class="rollzoom"><span class="zlabel">Pitch</span>
+              <button id="rollPitchOut" title="Zoom out (pitch)">−</button>
+              <button id="rollPitchIn" title="Zoom in (pitch)">+</button></span>
+            <button id="rollReset" title="Reset zoom &amp; scroll">Reset</button>
+          </span>
+        </div>
+        <div class="row"><span class="filelabel rollhint">Wheel = zoom pitch · Shift/Ctrl + wheel = zoom time · drag = pan when zoomed (else scrub) · click = seek · double-click a note = solo its track</span></div>
+        <div id="rollWrap">
+          <canvas id="roll"></canvas>
+          <div id="rollTip" class="rolltip" hidden></div>
+        </div>
       </div>
 
       <div class="panel">

@@ -232,6 +232,13 @@ const els = {
   octUp: $("octUp") as HTMLButtonElement,
   octLabel: $("octLabel"),
   roll: $("roll") as HTMLCanvasElement,
+  rollWrap: $("rollWrap"),
+  rollTip: $("rollTip"),
+  rollTimeIn: $("rollTimeIn") as HTMLButtonElement,
+  rollTimeOut: $("rollTimeOut") as HTMLButtonElement,
+  rollPitchIn: $("rollPitchIn") as HTMLButtonElement,
+  rollPitchOut: $("rollPitchOut") as HTMLButtonElement,
+  rollReset: $("rollReset") as HTMLButtonElement,
 };
 
 PRESETS.forEach((p, i) => {
@@ -491,41 +498,115 @@ const CH_COLORS = [
   "#118ab2", "#06d6a0", "#c9ada7", "#e5989b",
 ];
 let playheadT = 0; // seconds — the transport position the playhead marks
+
+// ---- roll view state (zoom + scroll) ----
+// zoom 1 = "fit": the whole song fits the width (X) / the full pitch range fits
+// the height (Y). >1 zooms in; pan{X,Y} is the device-px scroll offset into the
+// (larger-than-view) zoomed content. Reset by openSong / the Reset button.
+const ROLL_H = 220;           // canvas CSS height (px) — matches index.html
+const ROLL_ZMAX_X = 120;      // max time zoom
+const ROLL_ZMAX_Y = 24;       // max pitch zoom
+const MIN_NOTE_W = 1.5;       // device-px floor for a note's width  (× dpr)
+const MIN_NOTE_H = 2;         // device-px floor for a note's height (× dpr)
+let zoomX = 1, zoomY = 1;
+let panX = 0, panY = 0;
+let panning = false;          // a pan-drag is in progress (suppresses hover/auto-follow)
+
+// Pitched notes + pitch extent, cached per song (rebuilt when `song` changes) so
+// hover hit-testing (per mousemove) and drawing don't re-filter every call.
+let rollCache: { song: Song; pitched: Note[]; lo: number; hi: number; range: number } | null = null;
+function rollNotes(): { pitched: Note[]; lo: number; hi: number; range: number } {
+  if (!rollCache || rollCache.song !== song) {
+    const pitched = song.notes.filter((n) => n.channel !== 9);
+    let lo = 127, hi = 0;
+    for (const n of pitched) { if (n.pitch < lo) lo = n.pitch; if (n.pitch > hi) hi = n.pitch; }
+    rollCache = { song, pitched, lo, hi, range: Math.max(hi - lo, 1) };
+  }
+  return rollCache;
+}
+
+interface RollGeom {
+  W: number; H: number; pad: number; plotTop: number; plotH: number;
+  contentW: number; contentH: number; dur: number;
+  lo: number; hi: number; range: number; hasNotes: boolean;
+}
+/** Current roll geometry in device px (pure — reflects live zoom, not pan). */
+function rollGeom(): RollGeom {
+  const c = els.roll;
+  const dpr = devicePixelRatio;
+  // clientWidth can be 0 before first layout — fall back so the roll is never a
+  // zero-width (invisible) canvas.
+  const cw = c.clientWidth || c.parentElement?.clientWidth || 800;
+  const W = cw * dpr;
+  const H = ROLL_H * dpr;
+  const pad = 6 * dpr;
+  const plotTop = pad, plotH = H - 2 * pad;
+  const rn = rollNotes();
+  return {
+    W, H, pad, plotTop, plotH,
+    contentW: W * zoomX, contentH: plotH * zoomY, dur: song.duration,
+    lo: rn.lo, hi: rn.hi, range: rn.range,
+    hasNotes: rn.pitched.length > 0 && song.duration > 0,
+  };
+}
+/** Clamp pan so the (zoomed) content can't be scrolled past its own edges. */
+function clampPan(g: RollGeom): void {
+  panX = Math.max(0, Math.min(panX, Math.max(0, g.contentW - g.W)));
+  panY = Math.max(0, Math.min(panY, Math.max(0, g.contentH - g.plotH)));
+}
+
 function drawRoll(): void {
   const c = els.roll;
   const g = c.getContext("2d")!;
-  // clientWidth can be 0 if we draw before layout (initial load) — fall back so
-  // the roll is never a zero-width (invisible) canvas.
-  const cw = c.clientWidth || c.parentElement?.clientWidth || 800;
-  const W = (c.width = cw * devicePixelRatio);
-  const H = (c.height = 220 * devicePixelRatio);
+  const dpr = devicePixelRatio;
+  const geo = rollGeom();
+  const W = (c.width = geo.W);
+  const H = (c.height = geo.H);
   g.clearRect(0, 0, W, H);
   g.fillStyle = "rgba(255,255,255,0.03)";
   g.fillRect(0, 0, W, H);
-  const dur = song.duration;
-  const pitched = song.notes.filter((n) => n.channel !== 9);
-  if (pitched.length && dur > 0) {
-    let lo = 127, hi = 0;
-    for (const n of pitched) { if (n.pitch < lo) lo = n.pitch; if (n.pitch > hi) hi = n.pitch; }
-    const range = Math.max(hi - lo, 1);
-    const pad = 6 * devicePixelRatio;
-    const solo = [...mixer.values()].some((m) => m.solo);
-    for (const n of pitched) {
-      const m = mixer.get(`${n.track}:${n.channel}`);
-      const silent = m && (solo ? !m.solo : m.mute);
-      const x = (n.start / dur) * W;
-      const w = Math.max((n.dur / dur) * W, 1.5 * devicePixelRatio);
-      const y = pad + (1 - (n.pitch - lo) / range) * (H - 2 * pad);
-      const h = Math.max((H - 2 * pad) / (range + 1), 2 * devicePixelRatio);
-      g.fillStyle = CH_COLORS[n.channel % 16];
-      g.globalAlpha = silent ? 0.18 : 0.85;
-      g.fillRect(x, y, w, h);
-    }
-    g.globalAlpha = 1;
-    // transport playhead — always drawn (paused too), not just while playing
-    const px = (playheadT / dur) * W;
+  if (!geo.hasNotes) return;
+  const { pitched, lo, range } = rollNotes();
+  const { contentW, contentH, plotTop, plotH, dur } = geo;
+  // auto-scroll: keep the playhead in view during playback (page-turn when it
+  // leaves the window). Skipped while the user is actively panning.
+  if (running && !panning && contentW > W) {
+    const phx = (playheadT / dur) * contentW - panX;
+    if (phx < 0 || phx > W) panX = (playheadT / dur) * contentW - W * 0.1;
+  }
+  clampPan(geo);
+  const minW = MIN_NOTE_W * dpr;
+  const noteH = Math.max(contentH / (range + 1), MIN_NOTE_H * dpr);
+  const solo = [...mixer.values()].some((m) => m.solo);
+  for (const n of pitched) {
+    const x = (n.start / dur) * contentW - panX;
+    const w = Math.max((n.dur / dur) * contentW, minW);
+    if (x > W || x + w < 0) continue; // cull off-screen (fast when zoomed in)
+    const y = plotTop + (1 - (n.pitch - lo) / range) * contentH - panY;
+    if (y > H || y + noteH < 0) continue;
+    const m = mixer.get(`${n.track}:${n.channel}`);
+    const silent = m && (solo ? !m.solo : m.mute);
+    g.fillStyle = CH_COLORS[n.channel % 16];
+    g.globalAlpha = silent ? 0.18 : 0.85;
+    g.fillRect(x, y, w, noteH);
+  }
+  g.globalAlpha = 1;
+  // scroll indicators — thin bars showing the visible window vs. the content
+  g.fillStyle = "rgba(255,255,255,0.20)";
+  const bar = 3 * dpr;
+  if (contentW > W) {
+    const len = Math.max((W / contentW) * W, 14 * dpr);
+    g.fillRect((panX / contentW) * W, H - bar, len, bar);
+  }
+  if (contentH > plotH) {
+    const len = Math.max((plotH / contentH) * plotH, 14 * dpr);
+    g.fillRect(W - bar, plotTop + (panY / contentH) * plotH, bar, len);
+  }
+  // transport playhead — always drawn (paused too), only when within the view
+  const px = (playheadT / dur) * contentW - panX;
+  if (px >= 0 && px <= W) {
     g.strokeStyle = "#fff";
-    g.lineWidth = 1.5 * devicePixelRatio;
+    g.lineWidth = 1.5 * dpr;
     g.beginPath();
     g.moveTo(px, 0);
     g.lineTo(px, H);
@@ -1390,6 +1471,7 @@ function openSong(newSong: Song, name: string, preset?: SongConfig): void {
   els.cfgStatus.textContent = had ? `Loaded saved config for “${songId}”` : `New song “${songId}” (defaults)`;
   els.status.textContent = `Ready — streaming, ${song.notes.length} notes, ${song.duration.toFixed(1)}s. Press Play.`;
   selectedKey = null;
+  resetRollView(); // a new song starts fully fit (zoom/scroll reset)
   buildEditor();
   renderInstrumentEditor();
   drawRoll();
@@ -1449,24 +1531,188 @@ function seekTo(t: number): void {
 
 els.seek.addEventListener("input", () => seekTo(Number(els.seek.value)));
 
-// click (or drag) on the piano roll -> set the transport to that time
-function rollSeek(ev: MouseEvent): void {
-  if (song.duration <= 0) return;
+// ---- piano-roll interaction: zoom (wheel / buttons), pan (drag when zoomed),
+// seek (click), solo (double-click a note) and a hover tooltip. `noteName` is
+// the shared MIDI-pitch → name helper defined above. ----
+
+/** Mouse position in device px within the canvas, plus the current geometry. */
+function rollPt(ev: MouseEvent): { mx: number; my: number; geo: RollGeom } {
+  const geo = rollGeom();
   const rect = els.roll.getBoundingClientRect();
-  const frac = (ev.clientX - rect.left) / rect.width; // canvas may be CSS-scaled
-  seekTo(frac * song.duration);
+  const mx = (ev.clientX - rect.left) * (geo.W / (rect.width || 1));
+  const my = (ev.clientY - rect.top) * (geo.H / (rect.height || 1));
+  return { mx, my, geo };
 }
-els.roll.style.cursor = "pointer";
+
+/** Topmost pitched note under the cursor (respecting zoom/pan), or null. */
+function noteAt(ev: MouseEvent): Note | null {
+  const { mx, my, geo } = rollPt(ev);
+  if (!geo.hasNotes) return null;
+  const dpr = devicePixelRatio;
+  const { pitched, lo, range } = rollNotes();
+  const { contentW, contentH, plotTop, dur } = geo;
+  const noteH = Math.max(contentH / (range + 1), MIN_NOTE_H * dpr);
+  const minW = MIN_NOTE_W * dpr;
+  let found: Note | null = null;
+  for (const n of pitched) {
+    const x = (n.start / dur) * contentW - panX;
+    const w = Math.max((n.dur / dur) * contentW, minW);
+    if (mx < x || mx > x + w) continue;
+    const y = plotTop + (1 - (n.pitch - lo) / range) * contentH - panY;
+    if (my < y || my > y + noteH) continue;
+    found = n; // keep scanning: later notes are drawn on top
+  }
+  return found;
+}
+
+/** True when the zoomed content is larger than the view in either axis. */
+function rollScrollable(g = rollGeom()): boolean {
+  return g.contentW > g.W + 0.5 || g.contentH > g.plotH + 0.5;
+}
+function updateRollCursor(): void {
+  els.roll.style.cursor = panning ? "grabbing" : rollScrollable() ? "grab" : "pointer";
+}
+
+/** Zoom by factors fx/fy, keeping the content point under (mx,my) fixed. */
+function zoomRollAt(mx: number, my: number, fx: number, fy: number): void {
+  let g = rollGeom();
+  if (fx !== 1 && g.contentW > 0) {
+    const frac = (mx + panX) / g.contentW;
+    zoomX = Math.min(Math.max(zoomX * fx, 1), ROLL_ZMAX_X);
+    panX = frac * (g.W * zoomX) - mx;
+  }
+  if (fy !== 1 && g.contentH > 0) {
+    const frac = (my - g.plotTop + panY) / g.contentH;
+    zoomY = Math.min(Math.max(zoomY * fy, 1), ROLL_ZMAX_Y);
+    panY = frac * (g.plotH * zoomY) - (my - g.plotTop);
+  }
+  g = rollGeom();
+  clampPan(g);
+  updateRollCursor();
+  drawRoll();
+}
+/** Zoom about the centre of the view (used by the zoom buttons). */
+function zoomRollCentered(fx: number, fy: number): void {
+  const g = rollGeom();
+  zoomRollAt(g.W / 2, g.plotTop + g.plotH / 2, fx, fy);
+}
+function resetRollView(): void {
+  zoomX = 1; zoomY = 1; panX = 0; panY = 0;
+  updateRollCursor();
+  drawRoll();
+}
+
+// wheel: pitch zoom by default, time zoom with Shift/Ctrl/⌘ — centred on cursor
+els.roll.addEventListener("wheel", (ev) => {
+  ev.preventDefault();
+  const { mx, my } = rollPt(ev);
+  const f = Math.min(Math.max(Math.exp(-ev.deltaY * 0.0018), 0.5), 2);
+  if (ev.shiftKey || ev.ctrlKey || ev.metaKey) zoomRollAt(mx, my, f, 1);
+  else zoomRollAt(mx, my, 1, f);
+}, { passive: false });
+
+els.rollTimeIn.addEventListener("click", () => zoomRollCentered(1.4, 1));
+els.rollTimeOut.addEventListener("click", () => zoomRollCentered(1 / 1.4, 1));
+els.rollPitchIn.addEventListener("click", () => zoomRollCentered(1, 1.4));
+els.rollPitchOut.addEventListener("click", () => zoomRollCentered(1, 1 / 1.4));
+els.rollReset.addEventListener("click", resetRollView);
+
+// seek to the cursor's time (accounts for zoom + horizontal pan)
+function rollSeekAt(ev: MouseEvent): void {
+  const { mx, geo } = rollPt(ev);
+  if (!geo.hasNotes || geo.dur <= 0 || geo.contentW <= 0) return;
+  seekTo(((mx + panX) / geo.contentW) * geo.dur);
+}
+
+// Distinguish click (seek) from a pan/scrub drag by a small movement threshold.
+// `rollDidDrag` lets the click handler ignore the click a drag leaves behind.
+let rollDidDrag = false;
+let seekTimer: number | null = null;
 els.roll.addEventListener("mousedown", (ev) => {
-  rollSeek(ev);
-  const move = (e: MouseEvent) => rollSeek(e); // scrub while dragging
+  if (ev.button !== 0) return;
+  const startX = ev.clientX, startY = ev.clientY;
+  const startPanX = panX, startPanY = panY;
+  const g = rollGeom();
+  const canPan = rollScrollable(g);
+  const scale = g.W / (els.roll.getBoundingClientRect().width || 1);
+  rollDidDrag = false;
+  hideTip();
+  const move = (e: MouseEvent) => {
+    const dx = e.clientX - startX, dy = e.clientY - startY;
+    if (!rollDidDrag && Math.hypot(dx, dy) <= 3) return; // still a click
+    rollDidDrag = true;
+    if (canPan) {
+      panning = true;
+      updateRollCursor();
+      panX = startPanX - dx * scale;
+      panY = startPanY - dy * scale;
+      clampPan(rollGeom());
+      drawRoll();
+    } else {
+      rollSeekAt(e); // nothing to pan (fully zoomed out) — scrub like before
+    }
+  };
   const up = () => {
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
+    panning = false;
+    updateRollCursor();
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
 });
+
+// A single click seeks — but deferred, so a double-click can cancel it before it
+// fires (guarding against a double-click-to-solo also jumping the transport).
+els.roll.addEventListener("click", (ev) => {
+  if (rollDidDrag) { rollDidDrag = false; return; }
+  if (ev.detail > 1) return; // 2nd click of a double — dblclick handles it
+  if (seekTimer !== null) clearTimeout(seekTimer);
+  const e = ev;
+  seekTimer = window.setTimeout(() => { seekTimer = null; rollSeekAt(e); }, 220);
+});
+
+// Double-click a note -> toggle SOLO for its track:channel (no seek).
+els.roll.addEventListener("dblclick", (ev) => {
+  if (seekTimer !== null) { clearTimeout(seekTimer); seekTimer = null; }
+  const n = noteAt(ev);
+  if (n) toggleSoloFor(`${n.track}:${n.channel}`);
+});
+
+// hover tooltip: track/channel + GM instrument name + note name
+els.roll.addEventListener("mousemove", (ev) => {
+  if (panning) return;
+  const n = noteAt(ev);
+  if (n) showTip(n, ev); else hideTip();
+});
+els.roll.addEventListener("mouseleave", hideTip);
+
+function showTip(n: Note, ev: MouseEvent): void {
+  const key = `${n.track}:${n.channel}`;
+  const info = chanInfos.find((c) => c.key === key);
+  const inst = info ? instLabel(info) : (GM_NAMES[voiceOverrides[key]?.program ?? 0] ?? "Instrument");
+  const tip = els.rollTip;
+  tip.innerHTML = `<span class="tipkey">Trk ${n.track} · Ch ${n.channel + 1}</span> ${esc(inst)} · ${noteName(n.pitch)}`;
+  tip.style.borderLeftColor = CH_COLORS[n.channel % 16];
+  const wrap = els.rollWrap.getBoundingClientRect();
+  tip.style.left = `${ev.clientX - wrap.left}px`;
+  tip.style.top = `${ev.clientY - wrap.top}px`;
+  tip.hidden = false;
+}
+function hideTip(): void { els.rollTip.hidden = true; }
+
+/** Toggle SOLO for a channel (mirrors the mixer's Solo button + refreshes it). */
+function toggleSoloFor(key: string): void {
+  const m = mixer.get(key);
+  if (!m) return;
+  m.solo = !m.solo; // read live by the streaming synth next block
+  const btn = els.tracks.querySelector<HTMLButtonElement>(`button.mixbtn[data-k="${key}"][data-f="solo"]`);
+  if (btn) btn.classList.toggle("on-solo", m.solo);
+  saveConfig();
+  drawRoll(); // reflect the new solo dimming immediately (even when paused)
+}
+
+updateRollCursor();
 
 for (const ctl of [els.gm, els.drums, els.stereo, els.compress, els.voice]) {
   ctl.addEventListener("change", () => {
