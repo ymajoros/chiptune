@@ -8,3 +8,7 @@ __pycache__/
 node_modules/
 web/app.js
 web/app.js.map
+
+# release output (regenerate with `node build.mjs --release`)
+dist/
+chiptune-web-*.zip
