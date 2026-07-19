@@ -79,6 +79,14 @@ const OVERRIDE: Record<number, Voice> = {
   // Percussive Organ — this arrangement doubles it high (C6-E6); the 6'/8' drawbars
   // there scream past 8kHz and bury the mix, so keep it low and drop the top ranks.
   17: { attack: 0.006, release: 0.05, gain: 0.6, foldAbove: 81, harmonics: [{ multiple: 2, amp: 0.5 }, { multiple: 3, amp: 0.28 }, { multiple: 4, amp: 0.2 }] },
+  // Vibraphone — mellow struck metal bar: low-index FM at the 4:1 (2-octave) bar
+  // overtone, so a gentle bell-like attack settles to a warm fundamental and rings.
+  // Was the metallic-family FM (fm 3.5/index 6) — a high, cutting inharmonic tone.
+  11: { attack: 0.006, release: 0.3, gain: 0.72, fm: fm(4, 1.1, 1.3, 0) }, // Vibraphone — soft, warm, long ring (not shrill)
+  // Marimba — warm WOODEN bar: low-index FM at the 3:1 ratio (an upper sideband on
+  // the tuned 4:1 bar overtone) with a fast index decay, so a soft mallet attack
+  // mellows quickly to a fundamental-dominant tone. Was the metallic-family FM.
+  12: { attack: 0.002, release: 0.12, gain: 0.9, fm: fm(3, 2, 0.2, 0) }, // Marimba — soft, rounded, quick-ish decay (not metallic)
   29: { attack: 0.005, release: 0.16, gain: 0.9, ks: ks(0.998, 0.34, 0.06, 0.06, 0.13, 0.62), amp: cab(3, 0.6, 4300, 1.0) }, // Overdrive Guitar — KS string driven through the amp
   19: { attack: 0.05, release: 0.12, gain: 0.85, foldAbove: 81, harmonics: [{ multiple: 2, amp: 0.5 }, { multiple: 3, amp: 0.3 }, { multiple: 4, amp: 0.5 }, { multiple: 5, amp: 0.25 }, { multiple: 8, amp: 0.2 }] }, // Church Organ — fuller, principal ranks
   30: { attack: 0.004, release: 0.2, gain: 0.9, ks: ks(0.999, 0.3, 0.05, 0.05, 0.1, 0.72), amp: cab(6, 0.75, 3800, 0.85) }, // Distortion Guitar — KS string, high amp drive
@@ -117,7 +125,7 @@ const OVERRIDE: Record<number, Voice> = {
   25: { attack: 0.019, release: 0.18, gain: 0.9, ks: ks(0.9975, 0.4, 0.26, 0.05, 0.4, 0.5, { loopCut: 16000 }), sympathetic: symp(GTR_STRINGS, 0.5, 0.36, 0.16) }, // Steel Guitar — bright steel-string, de-clawed: low stiffness (no metallic zing) + softer tone + gentle loop-loss tail so it's not cutting; still clearly brighter than the nylon
   26: { attack: 0.012, release: 0.16, gain: 0.9, ks: ks(0.9965, 0.62, 0.3, 0.05, 0.3, 0.42), amp: cab(1.15, 0.25, 3600, 1.05) }, // Jazz Guitar — mellow hollow-body archtop through a warm, dark cab (was falling through to the generic guitar, identical to Muted)
   27: { attack: 0.022, release: 0.16, gain: 0.9, ks: ks(0.996, 0.5, 0.1, 0.02, 0.26, 0.5, { strings: 2, spread: 4, pluckNoise: 0.14 }), sympathetic: symp(GTR_STRINGS, 0.55, 0.35, 0.18), amp: cab(1.4, 0.7, 4500, 1.15) }, // Clean Guitar — electric; 2 strings +4c beating + pick-contact noise for a live vibrating-string feel (not synthy)
-  28: { attack: 0.004, release: 0.06, gain: 0.9, ks: ks(0.972, 0.9, 0.08, 0.02, 0.2, 0.34, { releaseDamp: 0.4 }) }, // Muted Guitar — palm-muted: very short/choked decay, dark (was falling through to the generic guitar, identical to Jazz)
+  28: { attack: 0.004, release: 0.06, gain: 0.9, ks: ks(0.972, 0.85, 0.08, 0, 0.2, 0.3, { loopCut: 2200, releaseDamp: 0.4 }) }, // Muted Guitar — palm-muted: short/choked decay; Extended-KS loop loss (loopCut) rounds the tone so it thumps instead of buzzing like a sitar
   80: { attack: 0.005, release: 0.06, gain: 0.8, sub: sub("square", 2200, 0.3, 1400, 0.3, 4, 2) }, // Square Lead
 };
 
