@@ -369,9 +369,21 @@ function instrumentOptionsHtml(selected: string): string {
   const gmGroup = `<optgroup label="General MIDI">${GM_NAMES.map((nm, i) => opt(`gm:${i}`, `${i} ${nm}`)).join("")}</optgroup>`;
   return customGroup + gmGroup;
 }
-/** The per-mixer-row instrument dropdown, selected to the channel's instrument. */
+/** The per-mixer-row instrument dropdown, selected to the channel's instrument.
+ *  This native <select> is the (visually-hidden) source of truth + change-event
+ *  source; the styled `.ipick` trigger + popup drive it. See the custom picker
+ *  block below (ipickOpen/ipickChoose) — selecting a popup row sets this select's
+ *  value and dispatches "change", reusing the existing els.tracks change handler. */
 function instrumentSelectHtml(key: string): string {
-  return `<select data-k="${key}" data-inst="1">${instrumentOptionsHtml(effectiveSelection(key))}</select>`;
+  return `<select class="nativehide" data-k="${key}" data-inst="1">${instrumentOptionsHtml(effectiveSelection(key))}</select>`;
+}
+/** The full instrument control for a mixer row: the hidden native <select> above
+ *  plus the styled trigger button that shows a real engine chip + instrument name. */
+function instrumentControlHtml(key: string): string {
+  const k = engineOfSelection(effectiveSelection(key));
+  return instrumentSelectHtml(key)
+    + `<button type="button" class="ipick" data-ipick="1" data-k="${key}" aria-haspopup="listbox" aria-expanded="false">`
+    + ipickTriggerInner(k, instrumentName(key)) + `</button>`;
 }
 /** Re-render every mixer row's instrument dropdown in place (options + selection).
  *  Touches only the <select>s, so an in-progress slider drag is undisturbed. */
@@ -944,6 +956,7 @@ const SOLO_HINT = "Solo — click: toggle · double-click: clear all solos";
 function buildTracksTable(): void {
   const chans = chanInfos;
   hoverChannel = null; // the hovered <tr> is about to be replaced — drop the stale highlight
+  ipickClose(); // the open picker's trigger is about to be replaced — drop the stale popup
   clampFxPage();
   const start = fxPage * FX_PAGE_SIZE;
   const pageFx = fxStack.slice(start, start + FX_PAGE_SIZE);
@@ -958,9 +971,10 @@ function buildTracksTable(): void {
     const gain = Number.isFinite(gRaw) ? gRaw : 1; // never let a bad value crash .toFixed
     const instCore = c.isDrum
       ? `<span class="filelabel">Drum kit</span>`
-      : instrumentSelectHtml(c.key);
-    // the engine chip now lives INSIDE the dropdown (coloured/labelled options);
-    // the closed <select> is tinted to its engine colour by refreshEngineChips().
+      : instrumentControlHtml(c.key);
+    // the engine chip is a real styled pill in the `.ipick` trigger (and popup rows);
+    // the hidden <select> stays the source of truth. refreshEngineChips() keeps the
+    // closed trigger's chip + name in sync after a selection / fork.
     const inst = `<span class="instcell">${instCore}</span>`;
     // effect-send cells for the visible FX columns (0 stored as an absent key)
     const fxCells = pageFx
@@ -1317,15 +1331,19 @@ const ENGINE_ICON: Record<EngineChipKey, string> = {
 function engineChipKey(c: ChanInfo): EngineChipKey {
   return c.isDrum ? "drums" : resolveVoice(c.key).engine;
 }
-/** Tint each mixer row's instrument <select> to its resolved engine colour, so the
- *  closed control shows the engine at a glance (matching its coloured options). The
- *  engine "chip" thus lives inside the listbox rather than as a separate element.
- *  Called after a channel's instrument or engine changes without a table rebuild. */
+/** Re-sync each mixer row's closed instrument control to its resolved engine: tint
+ *  the (hidden) <select> AND re-render the styled `.ipick` trigger's chip + name, so
+ *  the closed trigger always reflects the actual current instrument + engine colour.
+ *  Called after a channel's instrument or engine changes without a table rebuild
+ *  (and at the tail of refreshInstrumentSelects, so a fork/repoint updates it too). */
 function refreshEngineChips(): void {
   for (const c of chanInfos) {
     if (c.isDrum) continue;
+    const k = engineChipKey(c);
     const sel = els.tracks.querySelector<HTMLSelectElement>(`select[data-inst="1"][data-k="${c.key}"]`);
-    if (sel) sel.style.color = ENGINE_META[engineChipKey(c)].color;
+    if (sel) sel.style.color = ENGINE_META[k].color;
+    const trig = els.tracks.querySelector<HTMLElement>(`button.ipick[data-k="${c.key}"]`);
+    if (trig) trig.innerHTML = ipickTriggerInner(k, instrumentName(c.key));
   }
 }
 /** Populate the one-line colour→engine legend shown above the mixer table. */
@@ -1336,6 +1354,203 @@ function buildEngineLegend(): void {
     .map((m) => `<span class="englegitem" style="--eng:${m.color}" title="${esc(m.name)}"><span class="engdot"></span>${esc(m.name)}</span>`)
     .join(""));
 }
+
+// ---- custom instrument picker (real HTML engine chips in a styled listbox) ----
+// A native <select>/<option> can only hold plain text, so we keep the native
+// <select> (visually hidden, class `.nativehide`) as the SOURCE OF TRUTH + change
+// source and layer a presentational control on top: a `.ipick` trigger button
+// showing a real engine pill + name, and a shared `position:fixed` `.ipickpop`
+// listbox whose rows are `chipHtml(engine) + name`. Choosing a row just sets the
+// hidden select's value and dispatches "change" — reusing the existing els.tracks
+// change handler (repoint / fork / applyOptions / refreshEngineChips), so the whole
+// selection model is untouched. Fixed positioning lifts the popup above the mixer's
+// `#tracks { overflow-x: auto }` clip and lets the long GM list scroll on top.
+
+/** The engine pill: a small rounded badge with a colour dot + short abbr, tinted to
+ *  the engine colour (mirrors `.engchip`). Used in the trigger and in every popup row. */
+function chipHtml(k: EngineChipKey): string {
+  const m = ENGINE_META[k];
+  return `<span class="ichip" style="--eng:${m.color}"><span class="idot"></span>${m.abbr}</span>`;
+}
+/** Inner markup of a `.ipick` trigger: engine chip + instrument name + caret. */
+function ipickTriggerInner(k: EngineChipKey, name: string): string {
+  return chipHtml(k) + `<span class="ipickname">${esc(name)}</span>`
+    + `<span class="ipickcaret" aria-hidden="true">▾</span>`;
+}
+
+let ipickPopup: HTMLDivElement | null = null; // the one shared popup, appended to <body>
+let ipickTrigger: HTMLElement | null = null;  // the trigger the open popup belongs to
+let ipickOpenKey: string | null = null;       // channel key of the open popup (null = closed)
+let ipickOptions: string[] = [];              // option values, in listbox order (for kbd nav)
+let ipickActive = -1;                         // highlighted row index (keyboard nav)
+let ipickSuppressClick = false;               // swallow the button-activation click after a kbd select
+
+function ipickSelectFor(key: string): HTMLSelectElement | null {
+  return els.tracks.querySelector<HTMLSelectElement>(`select[data-inst="1"][data-k="${key}"]`);
+}
+function ipickEnsurePopup(): HTMLDivElement {
+  if (ipickPopup) return ipickPopup;
+  const p = document.createElement("div");
+  p.className = "ipickpop";
+  p.setAttribute("role", "listbox");
+  p.hidden = true;
+  // click a row → drive the hidden select (mousedown is guarded elsewhere to not close)
+  p.addEventListener("click", (e) => {
+    const row = (e.target as HTMLElement).closest(".ipickopt") as HTMLElement | null;
+    if (row && row.dataset.val != null) ipickChoose(row.dataset.val);
+  });
+  document.body.appendChild(p);
+  ipickPopup = p;
+  return p;
+}
+/** Build the grouped popup rows (Custom / General MIDI — same order as the <select>). */
+function ipickBuildRows(selected: string): { html: string; values: string[] } {
+  const values: string[] = [];
+  const row = (value: string, label: string): string => {
+    values.push(value);
+    const isSel = value === selected;
+    return `<div class="ipickopt${isSel ? " sel" : ""}" role="option" data-val="${value}"`
+      + ` aria-selected="${isSel}">${chipHtml(engineOfSelection(value))}`
+      + `<span class="ipickoptname">${esc(label)}</span></div>`;
+  };
+  const customs = Object.values(customInstruments);
+  let html = "";
+  if (customs.length) {
+    html += `<div class="ipickgroup">Custom</div>`
+      + customs.map((ci) => row(`custom:${ci.id}`, ci.name)).join("");
+  }
+  html += `<div class="ipickgroup">General MIDI</div>`
+    + GM_NAMES.map((nm, i) => row(`gm:${i}`, `${i} ${nm}`)).join("");
+  return { html, values };
+}
+/** Position the fixed popup under (or above, if cramped) the trigger, glued to its rect. */
+function ipickPosition(trigger: HTMLElement): void {
+  const p = ipickPopup;
+  if (!p) return;
+  const r = trigger.getBoundingClientRect();
+  const gap = 4, margin = 6, maxH = 320;
+  const pw = Math.max(r.width, 240);
+  p.style.minWidth = `${pw}px`;
+  const vw = document.documentElement.clientWidth;
+  let left = Math.min(r.left, vw - margin - pw);
+  if (left < margin) left = margin;
+  p.style.left = `${left}px`;
+  // measure natural content height with the clamp lifted, then decide up/down
+  p.style.maxHeight = "none";
+  const contentH = p.scrollHeight;
+  const belowRoom = window.innerHeight - r.bottom - margin;
+  const aboveRoom = r.top - margin;
+  const openUp = belowRoom < Math.min(maxH, contentH) && aboveRoom > belowRoom;
+  const room = openUp ? aboveRoom : belowRoom;
+  const shownH = Math.max(0, Math.min(maxH, contentH, room));
+  p.style.maxHeight = `${shownH}px`;
+  p.style.top = openUp ? `${r.top - gap - shownH}px` : `${r.bottom + gap}px`;
+}
+/** Highlight (keyboard focus) row `idx`; optionally scroll it into view. */
+function ipickHighlight(idx: number, scroll: boolean): void {
+  if (!ipickPopup) return;
+  const opts = ipickPopup.querySelectorAll<HTMLElement>(".ipickopt");
+  if (!opts.length) return;
+  idx = Math.max(0, Math.min(opts.length - 1, idx));
+  ipickActive = idx;
+  opts.forEach((o, i) => o.classList.toggle("active", i === idx));
+  if (scroll) opts[idx].scrollIntoView({ block: "nearest" });
+}
+function ipickMove(delta: number): void {
+  ipickHighlight(ipickActive < 0 ? 0 : ipickActive + delta, true);
+}
+/** Open the popup for a trigger button, seeded from its hidden select's value. */
+function ipickOpen(trigger: HTMLElement): void {
+  const key = trigger.dataset.k;
+  if (!key) return;
+  const select = ipickSelectFor(key);
+  if (!select) return;
+  if (ipickOpenKey && ipickOpenKey !== key) ipickClose(); // only one open at a time
+  const selected = select.value;
+  const p = ipickEnsurePopup();
+  const { html, values } = ipickBuildRows(selected);
+  p.innerHTML = html;
+  ipickOptions = values;
+  ipickOpenKey = key;
+  ipickTrigger = trigger;
+  ipickActive = Math.max(0, values.indexOf(selected));
+  trigger.setAttribute("aria-expanded", "true");
+  p.hidden = false;
+  ipickPosition(trigger);
+  ipickHighlight(ipickActive, true);
+}
+/** Close the popup and reset its state (safe to call when already closed). */
+function ipickClose(): void {
+  if (ipickTrigger) ipickTrigger.setAttribute("aria-expanded", "false");
+  if (ipickPopup) { ipickPopup.hidden = true; ipickPopup.innerHTML = ""; }
+  ipickOpenKey = null;
+  ipickTrigger = null;
+  ipickOptions = [];
+  ipickActive = -1;
+}
+/** Commit a selection: drive the hidden <select> so the EXISTING change handler runs. */
+function ipickChoose(value: string): void {
+  const key = ipickOpenKey;
+  const trigger = ipickTrigger;
+  ipickClose();
+  if (!key) return;
+  const select = ipickSelectFor(key);
+  if (!select) return;
+  select.value = value;
+  select.dispatchEvent(new Event("change", { bubbles: true })); // → els.tracks change handler
+  if (trigger) trigger.focus(); // keep keyboard focus on the (now-updated) trigger
+}
+/** Reposition the open popup when the page scrolls / resizes so it stays glued. */
+function ipickReflow(): void {
+  if (ipickOpenKey && ipickTrigger && ipickPopup && !ipickPopup.hidden) ipickPosition(ipickTrigger);
+}
+window.addEventListener("scroll", ipickReflow, true); // capture: also catch #tracks' own scroll
+window.addEventListener("resize", ipickReflow);
+// outside pointer press closes the popup (the trigger toggles itself; rows are inside)
+document.addEventListener("mousedown", (e) => {
+  if (!ipickOpenKey || !ipickPopup || ipickPopup.hidden) return;
+  const t = e.target as Node;
+  if (ipickPopup.contains(t)) return;                 // a row press → handled by row click
+  if (ipickTrigger && ipickTrigger.contains(t)) return; // the trigger toggles on its own click
+  ipickClose();
+});
+// pointer: open / close the picker from its trigger button
+els.tracks.addEventListener("click", (e) => {
+  const trig = (e.target as HTMLElement).closest("button.ipick") as HTMLElement | null;
+  if (!trig) return;
+  if (ipickSuppressClick) { ipickSuppressClick = false; return; } // swallow post-kbd-select click
+  const isOpen = ipickOpenKey === trig.dataset.k && !!ipickPopup && !ipickPopup.hidden;
+  if (isOpen) ipickClose(); else ipickOpen(trig);
+});
+// keyboard: open on ArrowUp/Down (Enter/Space open via the button's native click);
+// while open, arrows move the highlight, Enter/Space select, Esc closes. stopPropagation
+// shields the trigger's focus from the global transport / piano keyboard shortcuts.
+els.tracks.addEventListener("keydown", (e) => {
+  const trig = (e.target as HTMLElement).closest("button.ipick") as HTMLElement | null;
+  if (!trig) return;
+  e.stopPropagation();
+  const isOpen = ipickOpenKey === trig.dataset.k && !!ipickPopup && !ipickPopup.hidden;
+  if (!isOpen) {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); ipickOpen(trig); }
+    return; // Enter / Space fall through to the native button click, which opens it
+  }
+  switch (e.key) {
+    case "Escape": e.preventDefault(); ipickClose(); trig.focus(); break;
+    case "ArrowDown": e.preventDefault(); ipickMove(1); break;
+    case "ArrowUp": e.preventDefault(); ipickMove(-1); break;
+    case "Home": e.preventDefault(); ipickHighlight(0, true); break;
+    case "End": e.preventDefault(); ipickHighlight(ipickOptions.length - 1, true); break;
+    case "Enter":
+    case " ": {
+      e.preventDefault();
+      ipickSuppressClick = true; // suppress the button-activation click that trails a key select
+      setTimeout(() => { ipickSuppressClick = false; }, 0);
+      const v = ipickOptions[ipickActive];
+      if (v != null) ipickChoose(v);
+      break;
+    }
+  }
+});
 
 function selectChannel(key: string): void {
   selectedKey = key;
