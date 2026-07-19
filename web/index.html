@@ -89,6 +89,21 @@
       #fxMatrix input[type="range"] { width: 70px; vertical-align: middle; }
       #fxMatrix .mcell { display: flex; flex-direction: column; align-items: center; gap: 1px; }
       #fxMatrix .mcell .cellval { min-width: 0; font-size: 10px; }
+      /* matrix row label: track/channel over the instrument name (mixer order) */
+      #fxMatrix td.rowhdr { line-height: 1.2; }
+      #fxMatrix .rhkey { display: block; color: var(--fg); }
+      #fxMatrix .rhinst { display: block; max-width: 150px; color: var(--muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; }
+      /* collapsible effects section — sits just after the mixer table */
+      .fxsection { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 4px; }
+      .fxsection-head { display: flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; padding: 6px 2px; border-radius: 8px; }
+      .fxsection-head:hover .fxcaret { color: var(--accent); }
+      .fxsection-head h2 { margin: 0; }
+      .fxcaret { color: var(--muted); font-size: 11px; width: 12px; display: inline-block; }
+      .fxsection-body { margin-top: 8px; }
+      .fxsection.collapsed .fxsection-body { display: none; }
+      .fxpager { gap: 6px; }
+      .fxpager .pgbtn { padding: 2px 10px; font-size: 13px; border-radius: 6px; min-width: 32px; }
+      #fxPageInfo { min-width: 172px; text-align: center; font-variant-numeric: tabular-nums; }
       .editbtn { padding: 2px 8px; font-size: 12px; border-radius: 6px; }
       .editbtn.editing { border-color: var(--accent); color: var(--accent); }
       /* instrument editor */
@@ -157,23 +172,6 @@
 
       <div class="panel">
         <div class="row" style="justify-content: space-between;">
-          <h2 style="margin:0;">Effects rack — dynamic stack &amp; send matrix</h2>
-          <span class="row" style="gap:6px;">
-            <select id="fxAddType" style="padding:4px 8px; font-size:13px;">
-              <option value="reverb">Reverb</option>
-              <option value="delay">Delay</option>
-              <option value="chorus">Chorus</option>
-            </select>
-            <button id="fxAdd" style="padding:4px 12px; font-size:13px;">+ Add effect</button>
-          </span>
-        </div>
-        <div id="fxRack"></div>
-        <h3 class="matrixTitle">Send matrix <span class="filelabel">— route each track (rows) to each effect instance (columns), 0…1</span></h3>
-        <div id="fxMatrix" class="fxmatrix-wrap"></div>
-      </div>
-
-      <div class="panel">
-        <div class="row" style="justify-content: space-between;">
           <h2 style="margin:0;">Mixer</h2>
           <span>
             <button id="saveCfg" style="padding:4px 12px; font-size:13px;">Save</button>
@@ -182,6 +180,38 @@
         </div>
         <div class="row"><span class="filelabel" id="cfgStatus"></span></div>
         <div id="tracks"></div>
+
+        <!-- Effects: reads as the mixer extended rightward — collapsible, paginated -->
+        <div id="fxSection" class="fxsection">
+          <div class="fxsection-head" id="fxToggle" role="button" tabindex="0" aria-expanded="true" title="Collapse / expand effects">
+            <span class="fxcaret" id="fxCaret">▾</span>
+            <h2>Effects — sends &amp; rack</h2>
+            <span class="filelabel" id="fxSummary"></span>
+          </div>
+          <div class="fxsection-body">
+            <div class="row" style="justify-content: space-between;">
+              <span class="filelabel">Effect instances — enable, rename, tweak &amp; remove.</span>
+              <span class="row" style="gap:6px;">
+                <select id="fxAddType" style="padding:4px 8px; font-size:13px;">
+                  <option value="reverb">Reverb</option>
+                  <option value="delay">Delay</option>
+                  <option value="chorus">Chorus</option>
+                </select>
+                <button id="fxAdd" style="padding:4px 12px; font-size:13px;">+ Add effect</button>
+              </span>
+            </div>
+            <div id="fxRack"></div>
+            <div class="row" style="justify-content: space-between; margin-top: 14px;">
+              <h3 class="matrixTitle" style="margin:0;">Send matrix <span class="filelabel">— tracks (rows) → effects (columns), 0…1</span></h3>
+              <span class="row fxpager">
+                <button id="fxPrev" class="pgbtn" title="Previous effects">◀</button>
+                <span class="filelabel" id="fxPageInfo"></span>
+                <button id="fxNext" class="pgbtn" title="Next effects">▶</button>
+              </span>
+            </div>
+            <div id="fxMatrix" class="fxmatrix-wrap"></div>
+          </div>
+        </div>
       </div>
 
       <div class="panel">

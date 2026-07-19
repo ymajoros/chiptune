@@ -104,6 +104,13 @@ let fxStack: FxInstance[] = [];
 let fxIdSeq = 1;
 function newFxId(): string { return `fx-${Date.now().toString(36)}-${fxIdSeq++}`; }
 
+// Send-matrix pagination: show a small window of effect columns at once (the
+// track-label column is always visible), with a ◀/▶ paginator for the rest.
+const FX_PAGE_SIZE = 2;
+let fxPage = 0;
+function fxPageCount(): number { return Math.max(1, Math.ceil(fxStack.length / FX_PAGE_SIZE)); }
+function clampFxPage(): void { fxPage = Math.max(0, Math.min(fxPage, fxPageCount() - 1)); }
+
 /** The default rack for a fresh song: reproduces the old fixed 3-effect setup. */
 function defaultFxStack(): FxInstance[] {
   return [
@@ -196,6 +203,13 @@ const els = {
   fxMatrix: $("fxMatrix"),
   fxAdd: $("fxAdd") as HTMLButtonElement,
   fxAddType: $("fxAddType") as HTMLSelectElement,
+  fxSection: $("fxSection"),
+  fxToggle: $("fxToggle"),
+  fxCaret: $("fxCaret"),
+  fxSummary: $("fxSummary"),
+  fxPrev: $("fxPrev") as HTMLButtonElement,
+  fxNext: $("fxNext") as HTMLButtonElement,
+  fxPageInfo: $("fxPageInfo"),
   voice: $("voice") as HTMLSelectElement,
   voiceRow: $("voiceRow"),
   status: $("status"),
@@ -590,6 +604,7 @@ function buildEditor(): void {
     const sel = els.tracks.querySelector<HTMLSelectElement>(`select[data-k="${c.key}"][data-f="program"]`);
     if (sel) sel.value = String(voiceOverrides[c.key]?.program ?? c.program);
   }
+  fxPage = 0; // a freshly (re)built mixer starts at the first page of effect columns
   buildFxRack();
   buildSendMatrix(chans);
 }
@@ -624,23 +639,61 @@ function buildFxRack(): void {
   }).join("");
 }
 
-/** Render the send matrix: rows = channels, columns = FX instances. */
+/** GM / drum instrument name for a channel — used on the matrix row labels so the
+ *  matrix reads like the mixer (same order + labels) extended rightward. */
+function instLabel(c: ChanInfo): string {
+  if (c.isDrum) return "Drum kit";
+  const prog = voiceOverrides[c.key]?.program ?? c.program;
+  return GM_NAMES[prog] ?? `Program ${prog}`;
+}
+
+/** Collapsed-header summary of the rack (visible even when the section is shut). */
+function updateFxSummary(): void {
+  const n = fxStack.length;
+  const on = fxStack.filter((f) => f.enabled).length;
+  els.fxSummary.textContent = n ? `${n} effect${n === 1 ? "" : "s"} · ${on} on` : "no effects";
+}
+
+/** Paginator indicator ("Reverb, Delay (1–2 of N)") + ◀/▶ enabled state. */
+function updateFxPager(): void {
+  clampFxPage();
+  const start = fxPage * FX_PAGE_SIZE;
+  const pageFx = fxStack.slice(start, start + FX_PAGE_SIZE);
+  els.fxPageInfo.textContent = fxStack.length
+    ? `${pageFx.map((f) => f.name).join(", ")} (${start + 1}–${start + pageFx.length} of ${fxStack.length})`
+    : "no effects";
+  els.fxPrev.disabled = fxPage <= 0;
+  els.fxNext.disabled = fxPage >= fxPageCount() - 1;
+}
+
+/** Render the send matrix: rows = channels (mixer order + labels), columns = the
+ *  current page's FX instances. The leftmost track-label column is always shown. */
 function buildSendMatrix(chans: ChanInfo[]): void {
-  if (!fxStack.length) { els.fxMatrix.innerHTML = `<span class="filelabel">Add an effect to route sends.</span>`; return; }
-  const head = fxStack.map((f) => `<th class="colhdr${f.enabled ? "" : " disabled"}" title="${esc(f.name)}">${esc(f.name)}</th>`).join("");
+  updateFxSummary();
+  if (!fxStack.length) {
+    els.fxMatrix.innerHTML = `<span class="filelabel">Add an effect to route sends.</span>`;
+    updateFxPager();
+    return;
+  }
+  clampFxPage();
+  const start = fxPage * FX_PAGE_SIZE;
+  const pageFx = fxStack.slice(start, start + FX_PAGE_SIZE);
+  const head = pageFx.map((f) => `<th class="colhdr${f.enabled ? "" : " disabled"}" title="${esc(f.name)}">${esc(f.name)}</th>`).join("");
   const rows = chans.map((c) => {
     const m = mixer.get(c.key)!;
-    const label = `T${c.track}·Ch${c.channel + 1}${c.isDrum ? " (drum)" : ""}`;
-    const cells = fxStack.map((f) => {
+    const tc = `T${c.track}·Ch${c.channel + 1}${c.isDrum ? " (drum)" : ""}`;
+    const inst = instLabel(c);
+    const cells = pageFx.map((f) => {
       const val = Number(m.sends[f.id] ?? 0);
       return `<td><div class="mcell">
         <input type="range" data-mx="1" data-k="${c.key}" data-fxid="${f.id}" min="0" max="1" step="0.05" value="${val}"/>
         <span class="cellval" id="mx-${c.key}-${f.id}">${val.toFixed(2)}</span>
       </div></td>`;
     }).join("");
-    return `<tr><td class="rowhdr" title="${label}">${label}</td>${cells}</tr>`;
+    return `<tr><td class="rowhdr" title="${esc(`${tc} — ${inst}`)}"><span class="rhkey">${tc}</span><span class="rhinst">${esc(inst)}</span></td>${cells}</tr>`;
   });
   els.fxMatrix.innerHTML = `<table><thead><tr><th class="rowhdr">Track</th>${head}</tr></thead><tbody>${rows.join("")}</tbody></table>`;
+  updateFxPager();
 }
 
 // add / remove effect instances
@@ -648,6 +701,7 @@ els.fxAdd.addEventListener("click", () => {
   const type = els.fxAddType.value as FxType;
   const n = fxStack.filter((f) => f.type === type).length + 1;
   fxStack.push({ id: newFxId(), type, name: `${FX_TYPE_LABEL[type]} ${n}`, enabled: true, params: { ...FX_DEFAULT_PARAMS[type] } });
+  fxPage = fxPageCount() - 1; // page over to reveal the newly-added column
   buildFxRack();
   buildSendMatrix(chanInfos);
   applyOptions();
@@ -667,6 +721,7 @@ els.fxRack.addEventListener("input", (e) => {
     buildSendMatrix(chanInfos); // refresh the column header's enabled/dim state
   } else if (t.dataset.fxnm === "1") {
     f.name = t.value;
+    updateFxPager(); // keep the paginator's "(names)" indicator in sync live
   } else if (t.dataset.p) {
     const val = Number(t.value);
     f.params[t.dataset.p] = val;
@@ -702,6 +757,25 @@ els.fxMatrix.addEventListener("input", (e) => {
   if (out) out.textContent = val.toFixed(2);
   saveConfig();
 });
+
+// send-matrix paginator: page the effect columns (track-label column stays put)
+els.fxPrev.addEventListener("click", () => { if (fxPage > 0) { fxPage--; buildSendMatrix(chanInfos); } });
+els.fxNext.addEventListener("click", () => { if (fxPage < fxPageCount() - 1) { fxPage++; buildSendMatrix(chanInfos); } });
+
+// collapsible effects section (open/closed state persisted in localStorage)
+const FX_COLLAPSE_KEY = "chiptune:fxCollapsed";
+function setFxCollapsed(collapsed: boolean): void {
+  els.fxSection.classList.toggle("collapsed", collapsed);
+  els.fxToggle.setAttribute("aria-expanded", String(!collapsed));
+  els.fxCaret.textContent = collapsed ? "▸" : "▾";
+  try { localStorage.setItem(FX_COLLAPSE_KEY, collapsed ? "1" : "0"); } catch { /* storage disabled */ }
+}
+function toggleFxCollapsed(): void { setFxCollapsed(!els.fxSection.classList.contains("collapsed")); }
+els.fxToggle.addEventListener("click", () => { toggleFxCollapsed(); els.fxToggle.blur(); }); // blur -> spacebar stays play/pause
+els.fxToggle.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); toggleFxCollapsed(); }
+});
+try { setFxCollapsed(localStorage.getItem(FX_COLLAPSE_KEY) === "1"); } catch { setFxCollapsed(false); }
 
 function ov(key: string): VoiceOverride {
   return (voiceOverrides[key] ??= {});
