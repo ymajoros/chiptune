@@ -1,0 +1,57 @@
+name: Release web player
+
+# Builds the IP-safe release bundle (node build.mjs --release: original demo song,
+# NOT the local copyrighted songData.ts) and publishes it as a GitHub Release.
+# Version is read from the hardcoded VERSION file. Trigger manually, or by pushing
+# a tag that matches the VERSION.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # needed to create the release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Read version
+        id: ver
+        run: echo "version=$(tr -d ' \n\r' < VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Build release bundle (IP-safe demo song, no copyrighted data)
+        run: node build.mjs --release
+
+      - name: Sanity-check the bundle carries no copyrighted song data
+        run: |
+          if grep -qE 'demo|DATA_B64' dist/app.js; then
+            echo "::error::release bundle unexpectedly contains bundled-song markers"; exit 1
+          fi
+          echo "ok: no copyrighted-song markers in dist/app.js"
+
+      - name: Package dist
+        run: |
+          cd dist && zip -r "../chiptune-web-${{ steps.ver.outputs.version }}.zip" . && cd ..
+          ls -la chiptune-web-*.zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: chiptune web player ${{ steps.ver.outputs.version }}
+          body: |
+            From-scratch, dependency-free web MIDI player — pure synthesis, no samples.
+            Download the zip, serve the folder with any static server, and load a `.mid` file.
+            Bundled demo is an original CC0 loop (no copyrighted content).
+          files: chiptune-web-${{ steps.ver.outputs.version }}.zip
+          fail_on_unmatched_files: true
