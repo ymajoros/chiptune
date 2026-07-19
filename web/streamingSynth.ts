@@ -340,6 +340,15 @@ export class PitchedVoice implements RtVoice {
     this.a = Math.min(Math.floor(v.attack * SR), this.n >> 1);
     this.r = Math.min(Math.floor(v.release * SR), this.n >> 1);
     this.amp = (this.note.velocity / 127) ** 1.5 * 0.25 * safeGain(v.gain);
+    // KS: the per-sample loop coefficients (damping, decay) are safe to change on
+    // a ringing note, so a held note responds live to those knobs. Tuning/dispersion
+    // and the pluck seed (pick/tone/strings/stiffness) are baked at note start —
+    // you can't change a vibrating string's geometry, only re-pluck it.
+    if (this.engine === "ks" && v.ks) {
+      const dRaw = Number.isFinite(v.ks.damping) ? Math.min(Math.max(v.ks.damping, 0), 1) : 0.5;
+      this.ksB = 0.5 * dRaw;
+      this.ksDecay = Number.isFinite(v.ks.decay) ? Math.min(Math.max(v.ks.decay, 0), 1) : 0.996;
+    }
   }
 
   /**

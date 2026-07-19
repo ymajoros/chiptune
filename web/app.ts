@@ -542,6 +542,10 @@ function frame(): void {
     drawPlayhead(currentTime());
   }
   updatePlayingKeys(currentTime());
+  // Idle the live-audition node when nothing is held, so its main-thread callback
+  // doesn't compete with the song scheduler (a cause of glitches during playback).
+  // Voices linger until their release tail finishes, so size===0 means truly idle.
+  if (liveNode && liveConnected && liveVoices.size === 0) { try { liveNode.disconnect(); } catch {} liveConnected = false; }
   requestAnimationFrame(frame);
 }
 // redraw on resize, and once after first layout (initial canvas width may be 0)
@@ -1036,12 +1040,20 @@ function keyEl(pitch: number): HTMLElement | null {
 // voices and writes them straight to the output — no pre-render, no 8 s cap, so
 // latency is ~the buffer size and a held note rings indefinitely. Each voice is
 // the exact same stateful PitchedVoice DSP the song path uses.
-const LIVE_BUF = 256; // frames per callback (~6 ms @ 44.1 kHz) -> low latency
+// 1024 frames (~23 ms): a main-thread ScriptProcessor at 256 under-runs (the
+// "helicopter" chop + noise), especially while the song scheduler is also on the
+// main thread. 1024 is stable; latency is still fine for auditioning.
+const LIVE_BUF = 1024;
 const liveVoices = new Map<number, PitchedVoice>();
 let liveNode: ScriptProcessorNode | null = null;
+let liveConnected = false;
 let liveScratch = new Float32Array(LIVE_BUF);
 function ensureLiveNode(): void {
-  if (liveNode || !ctx) return;
+  if (!ctx) return;
+  if (liveNode) {
+    if (!liveConnected) { liveNode.connect(ctx.destination); liveConnected = true; } // reconnect after idle
+    return;
+  }
   const node = ctx.createScriptProcessor(LIVE_BUF, 0, 2);
   node.onaudioprocess = (e: AudioProcessingEvent) => {
     const outL = e.outputBuffer.getChannelData(0);
@@ -1071,6 +1083,7 @@ function ensureLiveNode(): void {
   };
   node.connect(ctx.destination);
   liveNode = node;
+  liveConnected = true;
 }
 function noteOn(pitch: number, velocity = 100): void {
   ensureCtx();
