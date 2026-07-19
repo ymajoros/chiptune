@@ -205,7 +205,6 @@ const els = {
   stereo: $("stereo") as HTMLInputElement,
   compress: $("compress") as HTMLInputElement,
   fxRack: $("fxRack"),
-  fxMatrix: $("fxMatrix"),
   fxAdd: $("fxAdd") as HTMLButtonElement,
   fxAddType: $("fxAddType") as HTMLSelectElement,
   fxSection: $("fxSection"),
@@ -658,17 +657,40 @@ function buildEditor(): void {
   els.songName.textContent = songName;
   const chans = channelsOf(song);
   chanInfos = chans;
+  fxPage = 0; // a freshly (re)built mixer starts at the first page of effect columns
+  buildTracksTable();
+  buildFxRack();
+}
+
+/** (Re)render the mixer rows: the always-visible core strip (Trk…Edit) plus the
+ *  current page of per-track effect-send columns — one column per visible FX
+ *  instance, each cell a 0…1 send into `mixer.get(key).sends[fxId]`. Called on
+ *  song load, effect add/remove, and whenever the ◀/▶ effect pager moves. */
+function buildTracksTable(): void {
+  const chans = chanInfos;
   const gmOptions = GM_NAMES.map((nm, i) => `<option value="${i}">${i} ${nm}</option>`).join("");
+  clampFxPage();
+  const start = fxPage * FX_PAGE_SIZE;
+  const pageFx = fxStack.slice(start, start + FX_PAGE_SIZE);
+  const fxHead = pageFx
+    .map((f) => `<th class="fxcol${f.enabled ? "" : " disabled"}" data-fxid="${f.id}" title="${esc(f.name)} send (0…1)">${esc(f.name)}</th>`)
+    .join("");
 
   const rows = chans.map((c) => {
     const m = mixer.get(c.key)!;
     const ov = voiceOverrides[c.key];
-    const prog = ov?.program ?? c.program;
     const gRaw = Number(ov?.gain ?? 1);
     const gain = Number.isFinite(gRaw) ? gRaw : 1; // never let a bad value crash .toFixed
     const inst = c.isDrum
       ? `<span class="filelabel">Drum kit</span>`
       : `<select data-k="${c.key}" data-f="program">${gmOptions}</select>`;
+    // effect-send cells for the visible FX columns (0 stored as an absent key)
+    const fxCells = pageFx
+      .map((f) => {
+        const val = Number(m.sends[f.id] ?? 0);
+        return `<td class="fxcol"><input type="range" data-mx="1" data-k="${c.key}" data-fxid="${f.id}" min="0" max="1" step="0.05" value="${val}"/><span class="cellval" id="mx-${c.key}-${f.id}">${val.toFixed(2)}</span></td>`;
+      })
+      .join("");
     return `<tr data-key="${c.key}">
       <td>${c.track}</td>
       <td>${c.channel + 1}${c.isDrum ? " (drum)" : ""}</td>
@@ -678,11 +700,12 @@ function buildEditor(): void {
       <td><button class="mixbtn ${m.mute ? "on-mute" : ""}" data-k="${c.key}" data-f="mute">M</button></td>
       <td><button class="mixbtn ${m.solo ? "on-solo" : ""}" data-k="${c.key}" data-f="solo">S</button></td>
       <td><button class="editbtn ${selectedKey === c.key ? "editing" : ""}" data-k="${c.key}" data-f="edit"${c.isDrum ? " disabled" : ""}>Edit</button></td>
+      ${fxCells}
     </tr>`;
   });
 
   els.tracks.innerHTML = `<table><thead><tr>
-    <th>Trk</th><th>Ch</th><th>Instrument (GM)</th><th>Gain</th><th>Volume</th><th>Mute</th><th>Solo</th><th></th>
+    <th>Trk</th><th>Ch</th><th>Instrument (GM)</th><th>Gain</th><th>Volume</th><th>Mute</th><th>Solo</th><th></th>${fxHead}
   </tr></thead><tbody>${rows.join("")}</tbody></table>`;
 
   // set each GM <select> to the current program
@@ -691,9 +714,7 @@ function buildEditor(): void {
     const sel = els.tracks.querySelector<HTMLSelectElement>(`select[data-k="${c.key}"][data-f="program"]`);
     if (sel) sel.value = String(voiceOverrides[c.key]?.program ?? c.program);
   }
-  fxPage = 0; // a freshly (re)built mixer starts at the first page of effect columns
-  buildFxRack();
-  buildSendMatrix(chans);
+  updateFxPager();
 }
 
 // ---- dynamic effects rack UI ----
@@ -701,6 +722,7 @@ const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&l
 
 /** Render the rack: one card per FX instance (enable, name, params, remove). */
 function buildFxRack(): void {
+  updateFxSummary(); // keep the collapsed-header "N effects · M on" count in sync
   if (!fxStack.length) {
     els.fxRack.innerHTML = `<span class="filelabel">No effects. Add one above.</span>`;
     return;
@@ -726,8 +748,7 @@ function buildFxRack(): void {
   }).join("");
 }
 
-/** GM / drum instrument name for a channel — used on the matrix row labels so the
- *  matrix reads like the mixer (same order + labels) extended rightward. */
+/** GM / drum instrument name for a channel — used by the piano-roll hover tooltip. */
 function instLabel(c: ChanInfo): string {
   if (c.isDrum) return "Drum kit";
   const prog = voiceOverrides[c.key]?.program ?? c.program;
@@ -753,44 +774,14 @@ function updateFxPager(): void {
   els.fxNext.disabled = fxPage >= fxPageCount() - 1;
 }
 
-/** Render the send matrix: rows = channels (mixer order + labels), columns = the
- *  current page's FX instances. The leftmost track-label column is always shown. */
-function buildSendMatrix(chans: ChanInfo[]): void {
-  updateFxSummary();
-  if (!fxStack.length) {
-    els.fxMatrix.innerHTML = `<span class="filelabel">Add an effect to route sends.</span>`;
-    updateFxPager();
-    return;
-  }
-  clampFxPage();
-  const start = fxPage * FX_PAGE_SIZE;
-  const pageFx = fxStack.slice(start, start + FX_PAGE_SIZE);
-  const head = pageFx.map((f) => `<th class="colhdr${f.enabled ? "" : " disabled"}" title="${esc(f.name)}">${esc(f.name)}</th>`).join("");
-  const rows = chans.map((c) => {
-    const m = mixer.get(c.key)!;
-    const tc = `T${c.track}·Ch${c.channel + 1}${c.isDrum ? " (drum)" : ""}`;
-    const inst = instLabel(c);
-    const cells = pageFx.map((f) => {
-      const val = Number(m.sends[f.id] ?? 0);
-      return `<td><div class="mcell">
-        <input type="range" data-mx="1" data-k="${c.key}" data-fxid="${f.id}" min="0" max="1" step="0.05" value="${val}"/>
-        <span class="cellval" id="mx-${c.key}-${f.id}">${val.toFixed(2)}</span>
-      </div></td>`;
-    }).join("");
-    return `<tr><td class="rowhdr" title="${esc(`${tc} — ${inst}`)}"><span class="rhkey">${tc}</span><span class="rhinst">${esc(inst)}</span></td>${cells}</tr>`;
-  });
-  els.fxMatrix.innerHTML = `<table><thead><tr><th class="rowhdr">Track</th>${head}</tr></thead><tbody>${rows.join("")}</tbody></table>`;
-  updateFxPager();
-}
-
 // add / remove effect instances
 els.fxAdd.addEventListener("click", () => {
   const type = els.fxAddType.value as FxType;
   const n = fxStack.filter((f) => f.type === type).length + 1;
   fxStack.push({ id: newFxId(), type, name: `${FX_TYPE_LABEL[type]} ${n}`, enabled: true, params: { ...FX_DEFAULT_PARAMS[type] } });
-  fxPage = fxPageCount() - 1; // page over to reveal the newly-added column
+  fxPage = fxPageCount() - 1; // page over to reveal the newly-added send column
   buildFxRack();
-  buildSendMatrix(chanInfos);
+  buildTracksTable(); // re-render the mixer with the new effect-send column
   applyOptions();
   saveConfig();
 });
@@ -805,10 +796,15 @@ els.fxRack.addEventListener("input", (e) => {
   if (t.dataset.fxen === "1") {
     f.enabled = t.checked;
     t.closest(".fxcard")?.classList.toggle("disabled", !f.enabled);
-    buildSendMatrix(chanInfos); // refresh the column header's enabled/dim state
+    // mirror the enabled/dim state onto the effect's mixer column header (if shown)
+    els.tracks.querySelector<HTMLElement>(`th.fxcol[data-fxid="${id}"]`)?.classList.toggle("disabled", !f.enabled);
+    updateFxSummary(); // "N effects · M on"
   } else if (t.dataset.fxnm === "1") {
     f.name = t.value;
-    updateFxPager(); // keep the paginator's "(names)" indicator in sync live
+    // keep the effect's mixer column header (if shown) + the pager label in sync
+    const th = els.tracks.querySelector<HTMLElement>(`th.fxcol[data-fxid="${id}"]`);
+    if (th) { th.textContent = f.name; th.title = `${f.name} send (0…1)`; }
+    updateFxPager();
   } else if (t.dataset.p) {
     const val = Number(t.value);
     f.params[t.dataset.p] = val;
@@ -824,30 +820,17 @@ els.fxRack.addEventListener("click", (e) => {
   if (!b) return;
   const id = b.dataset.fxid!;
   fxStack = fxStack.filter((f) => f.id !== id);
-  for (const m of mixer.values()) delete m.sends[id]; // drop the removed column's sends
+  for (const m of mixer.values()) delete m.sends[id]; // drop the removed effect's sends
   buildFxRack();
-  buildSendMatrix(chanInfos);
+  buildTracksTable(); // drop the removed effect's send column from the mixer
   applyOptions();
   saveConfig();
 });
 
-// send matrix cell -> update that channel's send to that FX instance (delegated)
-els.fxMatrix.addEventListener("input", (e) => {
-  const t = e.target as HTMLInputElement;
-  if (t.dataset.mx !== "1") return;
-  const key = t.dataset.k!, id = t.dataset.fxid!;
-  const m = mixer.get(key);
-  if (!m) return;
-  const val = Number(t.value);
-  if (val > 0) m.sends[id] = val; else delete m.sends[id];
-  const out = document.getElementById(`mx-${key}-${id}`);
-  if (out) out.textContent = val.toFixed(2);
-  saveConfig();
-});
-
-// send-matrix paginator: page the effect columns (track-label column stays put)
-els.fxPrev.addEventListener("click", () => { if (fxPage > 0) { fxPage--; buildSendMatrix(chanInfos); } });
-els.fxNext.addEventListener("click", () => { if (fxPage < fxPageCount() - 1) { fxPage++; buildSendMatrix(chanInfos); } });
+// effect-send paginator: page which effect columns the mixer table shows (the
+// core Trk…Edit columns always stay put)
+els.fxPrev.addEventListener("click", () => { if (fxPage > 0) { fxPage--; buildTracksTable(); } });
+els.fxNext.addEventListener("click", () => { if (fxPage < fxPageCount() - 1) { fxPage++; buildTracksTable(); } });
 
 // collapsible effects section (open/closed state persisted in localStorage)
 const FX_COLLAPSE_KEY = "chiptune:fxCollapsed";
@@ -885,6 +868,19 @@ function syncGainControls(key: string, val: number): void {
 
 els.tracks.addEventListener("input", (e) => {
   const t = e.target as HTMLInputElement;
+  // effect-send slider (the old send-matrix cell, now a mixer column): route this
+  // channel to the FX instance. 0 removes the key, same data model as before.
+  if (t.dataset.mx === "1") {
+    const mk = t.dataset.k!, id = t.dataset.fxid!;
+    const m = mixer.get(mk);
+    if (!m) return;
+    const v = Number(t.value);
+    if (v > 0) m.sends[id] = v; else delete m.sends[id];
+    const out = document.getElementById(`mx-${mk}-${id}`);
+    if (out) out.textContent = v.toFixed(2);
+    saveConfig(); // read live off `mixer` by the synth — no applyOptions needed
+    return;
+  }
   const key = t.dataset.k, field = t.dataset.f;
   if (!key || !field) return;
   const val = Number(t.value);

@@ -100,20 +100,11 @@
       .fxparam { display: flex; align-items: center; gap: 8px; font-size: 12px; }
       .fxparam label { color: var(--muted); flex: 0 0 auto; min-width: 62px; }
       .fxparam input[type="range"] { flex: 1; min-width: 60px; }
-      .matrixTitle { font-size: 13px; margin: 16px 0 6px; color: var(--fg); font-weight: 600; }
-      .fxmatrix-wrap { overflow-x: auto; }
-      #fxMatrix table { border-collapse: collapse; font-size: 12px; }
-      #fxMatrix th, #fxMatrix td { padding: 4px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; text-align: center; }
-      #fxMatrix th { color: var(--muted); font-weight: 600; }
-      #fxMatrix td.rowhdr, #fxMatrix th.rowhdr { text-align: left; color: var(--fg); position: sticky; left: 0; background: var(--panel); }
-      #fxMatrix th.colhdr.disabled { opacity: 0.5; }
-      #fxMatrix input[type="range"] { width: 70px; vertical-align: middle; }
-      #fxMatrix .mcell { display: flex; flex-direction: column; align-items: center; gap: 1px; }
-      #fxMatrix .mcell .cellval { min-width: 0; font-size: 10px; }
-      /* matrix row label: track/channel over the instrument name (mixer order) */
-      #fxMatrix td.rowhdr { line-height: 1.2; }
-      #fxMatrix .rhkey { display: block; color: var(--fg); }
-      #fxMatrix .rhinst { display: block; max-width: 150px; color: var(--muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; }
+      /* effect-send columns injected into the mixer table (paginated by ◀/▶) —
+         a faint accent tint + a left divider set them apart from the core strip */
+      #tracks th.fxcol, #tracks td.fxcol { border-left: 1px solid var(--border); background: rgba(76,201,240,0.05); }
+      #tracks th.fxcol { color: var(--accent); }
+      #tracks th.fxcol.disabled { opacity: 0.5; }
       /* collapsible effects section — sits just after the mixer table */
       .fxsection { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 4px; }
       .fxsection-head { display: flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; padding: 6px 2px; border-radius: 8px; }
@@ -214,19 +205,29 @@
             <button id="resetCfg" style="padding:4px 12px; font-size:13px;">Reset to defaults</button>
           </span>
         </div>
-        <div class="row"><span class="filelabel" id="cfgStatus"></span></div>
+        <div class="row" style="justify-content: space-between;">
+          <span class="filelabel" id="cfgStatus"></span>
+          <!-- paginator for the per-track effect-send columns shown in the mixer table below -->
+          <span class="row fxpager">
+            <span class="filelabel">Effect sends</span>
+            <button id="fxPrev" class="pgbtn" title="Previous effects">◀</button>
+            <span class="filelabel" id="fxPageInfo"></span>
+            <button id="fxNext" class="pgbtn" title="Next effects">▶</button>
+          </span>
+        </div>
         <div id="tracks"></div>
 
-        <!-- Effects: reads as the mixer extended rightward — collapsible, paginated -->
+        <!-- Effects rack — add / rename / tweak / remove instances. The per-track
+             sends live as the paginated columns in the mixer table above. -->
         <div id="fxSection" class="fxsection">
-          <div class="fxsection-head" id="fxToggle" role="button" tabindex="0" aria-expanded="true" title="Collapse / expand effects">
+          <div class="fxsection-head" id="fxToggle" role="button" tabindex="0" aria-expanded="true" title="Collapse / expand effects rack">
             <span class="fxcaret" id="fxCaret">▾</span>
-            <h2>Effects — sends &amp; rack</h2>
+            <h2>Effects rack</h2>
             <span class="filelabel" id="fxSummary"></span>
           </div>
           <div class="fxsection-body">
             <div class="row" style="justify-content: space-between;">
-              <span class="filelabel">Effect instances — enable, rename, tweak &amp; remove.</span>
+              <span class="filelabel">Effect instances — enable, rename, tweak &amp; remove. Route them per track with the send columns in the mixer above.</span>
               <span class="row" style="gap:6px;">
                 <select id="fxAddType" style="padding:4px 8px; font-size:13px;">
                   <option value="reverb">Reverb</option>
@@ -237,15 +238,6 @@
               </span>
             </div>
             <div id="fxRack"></div>
-            <div class="row" style="justify-content: space-between; margin-top: 14px;">
-              <h3 class="matrixTitle" style="margin:0;">Send matrix <span class="filelabel">— tracks (rows) → effects (columns), 0…1</span></h3>
-              <span class="row fxpager">
-                <button id="fxPrev" class="pgbtn" title="Previous effects">◀</button>
-                <span class="filelabel" id="fxPageInfo"></span>
-                <button id="fxNext" class="pgbtn" title="Next effects">▶</button>
-              </span>
-            </div>
-            <div id="fxMatrix" class="fxmatrix-wrap"></div>
           </div>
         </div>
       </div>
