@@ -26,7 +26,7 @@
  * Run:
  *   node voice.ts --say "bonjour tout le monde" --play
  *   node voice.ts --phonemes "b O~ Z u R" --play
- *   node voice.ts --sing "Z @ . v w a . l a . m E R" --notes "71:0.5,69:0.5,67:0.3,67:0.9" --play
+ *   node voice.ts --sing "Z @ v w a l a m E R" --notes "71:0.5,69:0.5,67:0.3,67:0.9" --play
  */
 
 import { writeFileSync } from "node:fs";
