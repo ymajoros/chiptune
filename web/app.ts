@@ -846,7 +846,8 @@ function renderInstrumentEditor(): void {
       ${NUM("Vel→brightness", key, "ks", "velBright", k.velBright ?? 0, 0, 1, 0.05)}
       ${NUM("Release damping", key, "ks", "releaseDamp", k.releaseDamp ?? 0, 0, 1, 0.05)}
       ${NUM("Pluck noise", key, "ks", "pluckNoise", k.pluckNoise ?? 0, 0, 0.5, 0.02)}
-    </div><span class="filelabel">Strings 2–3 + Detune = beating/chorus (piano, 12-string). Vel→brightness: harder = brighter. Release damping: choke on note-off. Pluck noise: pick/hammer tick. All 0/1 = off.</span>`;
+      ${NUM("String HF damp (Hz)", key, "ks", "loopCut", k.loopCut ?? 20000, 400, 20000, 100)}
+    </div><span class="filelabel">Strings 2–3 + Detune = beating/chorus (piano, 12-string). Vel→brightness: harder = brighter. Release damping: choke on note-off. Pluck noise: pick/hammer tick. String HF damp: lower = highs decay fast, bright pluck settles to a round tone (bass/thick strings); 20000 = off.</span>`;
   } else {
     const fo = voice.formant!;
     params = `<h3>Formant (vocal)</h3>

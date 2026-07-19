@@ -117,6 +117,10 @@ export interface KsConfig {
   //   choked (faster high-freq + amplitude decay) as a player mutes it. 0 = just fade out, as before.
   pluckNoise?: number; // 0..~0.5 short broadband pick/finger contact-noise transient at the attack.
   //   0 = clean (bare string). A little adds the "click" of a real pick/hammer touching the string.
+  loopCut?: number; // Extended-KS loop loss filter cutoff, Hz (default off = no extra filter). A
+  //   one-pole low-pass INSIDE the feedback loop: harmonics above it decay fast while the
+  //   fundamental rings — the frequency-dependent damping of a real (esp. thick bass/wound) string.
+  //   Low values (~800-1500) give a bright pluck that instantly settles to a round tone (kills "sitar").
 }
 
 /**
@@ -480,6 +484,13 @@ export function allpassPhaseDelay(a: number, w: number): number {
   return -phase / w;
 }
 
+/** Phase delay (samples) at w of a one-pole low-pass y = A·x + (1-A)·y[-1]. Used to
+ *  compensate the delay-line length for the Extended-KS loop loss filter. */
+export function onepolePhaseDelay(A: number, w: number): number {
+  if (w <= 0 || A >= 1) return 0;
+  return Math.atan2((1 - A) * Math.sin(w), 1 - (1 - A) * Math.cos(w)) / w;
+}
+
 /** RBJ low-pass (2-pole) — the speaker cabinet's high roll-off. */
 function lowpass(f: number, q: number): Biquad {
   const w0 = (2 * Math.PI * Math.min(f, SR * 0.45)) / SR;
@@ -536,6 +547,7 @@ export interface KsSetup {
   disp: number; // dispersion all-pass coefficient (string stiffness / inharmonicity)
   b: number; // damping (loop low-pass blend)
   decay: number; // feedback gain
+  lpA: number; // Extended-KS loop loss one-pole coefficient (1 = off; <1 damps highs in the loop)
 }
 
 /**
@@ -559,7 +571,13 @@ export function ksStringSetup(freq: number, ks: KsConfig): KsSetup {
   const dRaw = Number.isFinite(ks.damping) ? Math.min(Math.max(ks.damping, 0), 1) : 0.5;
   const bEff = 0.5 * dRaw;
   const DAMP_DELAY = bEff; // the averager's group delay ≈ bEff samples (keeps tuning exact)
-  const target = SR / freq - pdDisp - DAMP_DELAY;
+  // Extended-KS loop loss filter: a one-pole low-pass in the loop so highs decay
+  // fast (frequency-dependent damping of a real string). Compensate its phase
+  // delay so it darkens the tone without detuning the note.
+  const loopCut = Number.isFinite(ks.loopCut) ? (ks.loopCut as number) : 20000;
+  const lpA = loopCut < SR * 0.45 ? 1 - Math.exp((-2 * Math.PI * loopCut) / SR) : 1;
+  const pdLP = lpA < 1 ? onepolePhaseDelay(lpA, w0) : 0;
+  const target = SR / freq - pdDisp - DAMP_DELAY - pdLP;
   let Li = Math.floor(target);
   if (Li < 2) Li = 2;
   let frac = target - Li;
@@ -568,7 +586,7 @@ export function ksStringSetup(freq: number, ks: KsConfig): KsSetup {
   const C = (1 - frac) / (1 + frac); // first-order fractional-delay all-pass
   // Guard decay: a non-finite feedback gain would latch the whole loop to NaN.
   const decay = Number.isFinite(ks.decay) ? Math.min(Math.max(ks.decay, 0), 1) : 0.996;
-  return { Li, C, disp, b: bEff, decay };
+  return { Li, C, disp, b: bEff, decay, lpA };
 }
 
 /**
@@ -623,11 +641,12 @@ function renderKs(
   const lines: Float32Array[] = [];
   const Li = new Int32Array(ns), disp = new Float64Array(ns), C = new Float64Array(ns), idx = new Int32Array(ns);
   const dX1 = new Float64Array(ns), dY1 = new Float64Array(ns), tX1 = new Float64Array(ns), tY1 = new Float64Array(ns), dampPrev = new Float64Array(ns);
-  let b = 0, decay = 1;
+  const lpState = new Float64Array(ns); // Extended-KS loop loss filter state per string
+  let b = 0, decay = 1, lpA = 1;
   for (let s = 0; s < ns; s++) {
     const cents = ns > 1 ? (s / (ns - 1) - 0.5) * spread : 0;
     const setup = ksStringSetup(freq * 2 ** (cents / 1200), ks);
-    Li[s] = setup.Li; disp[s] = setup.disp; C[s] = setup.C; b = setup.b; decay = setup.decay;
+    Li[s] = setup.Li; disp[s] = setup.disp; C[s] = setup.C; b = setup.b; decay = setup.decay; lpA = setup.lpA;
     lines[s] = seedString(setup.Li, ks.pick ?? 0, effTone);
   }
   const body = ks.body ?? 0;
@@ -655,7 +674,8 @@ function renderKs(
       // feedback chain: dispersion all-pass -> tuning all-pass -> damping -> decay
       const dOut = disp[s] * cur + dX1[s] - disp[s] * dY1[s]; dX1[s] = cur; dY1[s] = dOut;
       const tOut = C[s] * dOut + tX1[s] - C[s] * tY1[s]; tX1[s] = dOut; tY1[s] = tOut;
-      const lp = (1 - bK) * tOut + bK * dampPrev[s]; dampPrev[s] = tOut;
+      let lp = (1 - bK) * tOut + bK * dampPrev[s]; dampPrev[s] = tOut;
+      if (lpA < 1) { lpState[s] += lpA * (lp - lpState[s]); lp = lpState[s]; } // Extended-KS loop loss: highs decay fast
       let fb = lp * decayK;
       if (!Number.isFinite(fb)) fb = 0; // self-heal: never let the loop latch to NaN
       line[idx[s]] = fb;

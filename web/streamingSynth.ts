@@ -241,6 +241,7 @@ export class PitchedVoice implements RtVoice {
   private co: Biquad[] = []; private A!: { f: number[]; g: number[]; bw: number[] }; private B!: { f: number[]; g: number[]; bw: number[] }; private morph = false;
   private ksLines: Float32Array[] = []; private ksIdx!: Int32Array; private ksLi!: Int32Array; // KS: per-string delay lines
   private ksC!: Float64Array; private ksDisp!: Float64Array; private ksB = 0; private ksDecay = 1; // per-string tuning/dispersion coeffs; shared damping/decay
+  private ksLpA = 1; private ksLpState!: Float64Array; // Extended-KS loop loss filter (1 = off)
   private ksNorm = 1; // multi-string sum normalization (1/sqrt(strings))
   private dX1!: Float64Array; private dY1!: Float64Array; private tX1!: Float64Array; private tY1!: Float64Array; private dampPrev!: Float64Array; // KS loop filter state (per string)
   private bodyC?: (Biquad & { g: number })[]; // modal body resonator bank
@@ -274,10 +275,11 @@ export class PitchedVoice implements RtVoice {
       this.ksNorm = 1 / Math.sqrt(ns);
       this.ksLi = new Int32Array(ns); this.ksC = new Float64Array(ns); this.ksDisp = new Float64Array(ns); this.ksIdx = new Int32Array(ns);
       this.dX1 = new Float64Array(ns); this.dY1 = new Float64Array(ns); this.tX1 = new Float64Array(ns); this.tY1 = new Float64Array(ns); this.dampPrev = new Float64Array(ns);
+      this.ksLpState = new Float64Array(ns);
       for (let s = 0; s < ns; s++) {
         const cents = ns > 1 ? (s / (ns - 1) - 0.5) * spread : 0;
         const setup = ksStringSetup(freq * 2 ** (cents / 1200), v.ks);
-        this.ksLi[s] = setup.Li; this.ksC[s] = setup.C; this.ksDisp[s] = setup.disp; this.ksB = setup.b; this.ksDecay = setup.decay;
+        this.ksLi[s] = setup.Li; this.ksC[s] = setup.C; this.ksDisp[s] = setup.disp; this.ksB = setup.b; this.ksDecay = setup.decay; this.ksLpA = setup.lpA;
         this.ksLines[s] = seedString(setup.Li, v.ks.pick ?? 0, effTone);
       }
       if ((v.ks.body ?? 0) > 0) { this.bodyC = BODY_MODES.map((m) => ({ ...bandpass(m.f, m.q), g: m.g })); this.bodyState = new Float64Array(this.bodyC.length * 4); }
@@ -501,7 +503,8 @@ export class PitchedVoice implements RtVoice {
             const cur = line[p];
             const dOut = disp * cur + this.dX1[s] - disp * this.dY1[s]; this.dX1[s] = cur; this.dY1[s] = dOut;
             const tOut = C * dOut + this.tX1[s] - C * this.tY1[s]; this.tX1[s] = dOut; this.tY1[s] = tOut;
-            const lp = (1 - bK) * tOut + bK * this.dampPrev[s]; this.dampPrev[s] = tOut;
+            let lp = (1 - bK) * tOut + bK * this.dampPrev[s]; this.dampPrev[s] = tOut;
+            if (this.ksLpA < 1) { this.ksLpState[s] += this.ksLpA * (lp - this.ksLpState[s]); lp = this.ksLpState[s]; } // Extended-KS loop loss
             let fb = lp * decayK;
             if (!Number.isFinite(fb)) fb = 0;
             line[p] = fb;
