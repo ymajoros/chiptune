@@ -890,6 +890,19 @@ function buildEditor(): void {
   buildEngineLegend();
 }
 
+/* Inline SVG glyphs for the mixer's Mute / Solo / Edit buttons. They use
+ * `currentColor`, so they inherit the button's text colour and turn white on the
+ * coloured active backgrounds (on-mute / on-solo). Kept tiny (14px) and
+ * self-contained — no external assets. */
+const ICON_MUTE =
+  `<svg class="mixicon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M11 5 6 9H3v6h3l5 4z" fill="currentColor" stroke="none"/><line x1="16" y1="9" x2="21" y2="15"/><line x1="21" y1="9" x2="16" y2="15"/></svg>`;
+const ICON_SOLO =
+  `<svg class="mixicon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 14v-2a8 8 0 0 1 16 0v2"/><rect x="2.5" y="13.5" width="4.2" height="6" rx="1.6" fill="currentColor" stroke="none"/><rect x="17.3" y="13.5" width="4.2" height="6" rx="1.6" fill="currentColor" stroke="none"/></svg>`;
+const ICON_EDIT =
+  `<svg class="mixicon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 20h4L18.5 9.5a2.12 2.12 0 0 0-3-3L5 17z"/><path d="m13.5 6.5 3 3"/></svg>`;
+const MUTE_HINT = "Mute — click: toggle · double-click: clear all mutes";
+const SOLO_HINT = "Solo — click: toggle · double-click: clear all solos";
+
 /** (Re)render the mixer rows: the always-visible core strip (Trk…Edit) plus the
  *  current page of per-track effect-send columns — one column per visible FX
  *  instance, each cell a 0…1 send into `mixer.get(key).sends[fxId]`. Called on
@@ -926,9 +939,9 @@ function buildTracksTable(): void {
       <td>${inst}</td>
       <td><input type="range" data-k="${c.key}" data-f="gain" min="0.1" max="2" step="0.05" value="${gain}" ${c.isDrum ? "disabled" : ""}/><span class="cellval" id="gain-${c.key}">${gain.toFixed(2)}</span></td>
       <td><input type="range" data-k="${c.key}" data-f="volume" min="0" max="1" step="0.02" value="${m.volume}"/><span class="cellval" id="vol-${c.key}">${m.volume.toFixed(2)}</span></td>
-      <td><button class="mixbtn ${m.mute ? "on-mute" : ""}" data-k="${c.key}" data-f="mute">M</button></td>
-      <td><button class="mixbtn ${m.solo ? "on-solo" : ""}" data-k="${c.key}" data-f="solo">S</button></td>
-      <td><button class="editbtn ${selectedKey === c.key ? "editing" : ""}" data-k="${c.key}" data-f="edit"${c.isDrum ? " disabled" : ""}>Edit</button></td>
+      <td><button class="mixbtn ${m.mute ? "on-mute" : ""}" data-k="${c.key}" data-f="mute" title="${MUTE_HINT}" aria-label="Mute channel" aria-pressed="${m.mute}">${ICON_MUTE}</button></td>
+      <td><button class="mixbtn ${m.solo ? "on-solo" : ""}" data-k="${c.key}" data-f="solo" title="${SOLO_HINT}" aria-label="Solo channel" aria-pressed="${m.solo}">${ICON_SOLO}</button></td>
+      <td><button class="editbtn ${selectedKey === c.key ? "editing" : ""}" data-k="${c.key}" data-f="edit"${c.isDrum ? " disabled" : ""} title="Edit instrument" aria-label="Edit instrument">${ICON_EDIT}</button></td>
       ${fxCells}
     </tr>`;
   });
@@ -1141,9 +1154,34 @@ els.tracks.addEventListener("click", (e) => {
   if (!b) return;
   const key = b.dataset.k!, field = b.dataset.f!;
   const m = mixer.get(key)!;
-  if (field === "mute") { m.mute = !m.mute; b.classList.toggle("on-mute", m.mute); }
-  else if (field === "solo") { m.solo = !m.solo; b.classList.toggle("on-solo", m.solo); }
+  if (field === "mute") { m.mute = !m.mute; b.classList.toggle("on-mute", m.mute); b.setAttribute("aria-pressed", String(m.mute)); }
+  else if (field === "solo") { m.solo = !m.solo; b.classList.toggle("on-solo", m.solo); b.setAttribute("aria-pressed", String(m.solo)); }
   saveConfig();
+  if (field === "solo") drawRoll(); // solo dims non-soloed notes in the roll
+});
+
+/** Clear the given flag (mute/solo) on every channel and sync all matching
+ *  buttons. Used by the double-click "clear all" gesture. Because a dblclick
+ *  fires *after* its two single-clicks (which net to no change on the pressed
+ *  button), running this last makes clear-all win and leaves every button in a
+ *  consistent, fully-cleared state. */
+function clearAllMix(field: "mute" | "solo"): void {
+  for (const m of mixer.values()) m[field] = false;
+  const cls = field === "mute" ? "on-mute" : "on-solo";
+  for (const btn of els.tracks.querySelectorAll<HTMLButtonElement>(`button.mixbtn[data-f="${field}"]`)) {
+    btn.classList.remove(cls);
+    btn.setAttribute("aria-pressed", "false");
+  }
+  saveConfig(); // read live off `mixer` by the synth — affects playback next block
+  if (field === "solo") drawRoll();
+}
+
+// double-click a Mute / Solo button = clear that flag across ALL channels
+els.tracks.addEventListener("dblclick", (e) => {
+  const b = (e.target as HTMLElement).closest("button.mixbtn") as HTMLButtonElement | null;
+  if (!b) return;
+  const field = b.dataset.f!;
+  if (field === "mute" || field === "solo") clearAllMix(field);
 });
 
 // ---- instrument editor ----
@@ -1994,7 +2032,7 @@ function toggleSoloFor(key: string): void {
   if (!m) return;
   m.solo = !m.solo; // read live by the streaming synth next block
   const btn = els.tracks.querySelector<HTMLButtonElement>(`button.mixbtn[data-k="${key}"][data-f="solo"]`);
-  if (btn) btn.classList.toggle("on-solo", m.solo);
+  if (btn) { btn.classList.toggle("on-solo", m.solo); btn.setAttribute("aria-pressed", String(m.solo)); }
   saveConfig();
   drawRoll(); // reflect the new solo dimming immediately (even when paused)
 }
