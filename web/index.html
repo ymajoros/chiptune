@@ -87,6 +87,25 @@
       .mixbtn.on-mute { background: #7a2233; border-color: #b5179e; color: #fff; }
       .mixbtn.on-solo { background: #2a5a2a; border-color: #8ac926; color: #fff; }
       .cellval { color: var(--muted); font-variant-numeric: tabular-nums; display: inline-block; min-width: 26px; }
+      /* per-channel synthesis-engine colour chips (mixer rows) + legend.
+         --eng carries the engine colour; the dot always shows it, the pill tint
+         degrades gracefully where color-mix() is unsupported. */
+      #tracks .instcell { display: inline-flex; align-items: center; gap: 8px; }
+      .engchip, .englegitem { display: inline-flex; align-items: center; gap: 5px; }
+      .engdot {
+        width: 11px; height: 11px; border-radius: 3px; flex: 0 0 auto;
+        background: var(--eng, var(--muted));
+        box-shadow: inset 0 0 0 1px rgba(0,0,0,0.3);
+      }
+      .engchip {
+        font-size: 10px; font-weight: 700; letter-spacing: 0.03em; line-height: 1.4;
+        white-space: nowrap; cursor: default; color: var(--eng, var(--muted));
+        border: 1px solid color-mix(in srgb, var(--eng, var(--muted)) 45%, transparent);
+        background: color-mix(in srgb, var(--eng, var(--muted)) 15%, transparent);
+        border-radius: 6px; padding: 1px 6px 1px 5px;
+      }
+      .englegend { gap: 6px 14px; margin: 2px 0 10px; }
+      .englegitem { color: var(--muted); font-size: 12px; }
       /* dynamic effects rack */
       #fxRack { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
       .fxcard { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
@@ -215,6 +234,8 @@
             <button id="fxNext" class="pgbtn" title="Next effects">▶</button>
           </span>
         </div>
+        <!-- colour→engine key for the per-row chips in the mixer table below -->
+        <div class="row englegend" id="engineLegend" aria-label="Synthesis engine colour key"></div>
         <div id="tracks"></div>
 
         <!-- Effects rack — add / rename / tweak / remove instances. The per-track

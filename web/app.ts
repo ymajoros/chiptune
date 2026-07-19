@@ -374,6 +374,7 @@ function refreshInstrumentSelects(): void {
     const sel = els.tracks.querySelector<HTMLSelectElement>(`select[data-inst="1"][data-k="${c.key}"]`);
     if (sel) sel.innerHTML = instrumentOptionsHtml(effectiveSelection(c.key));
   }
+  refreshEngineChips(); // a repointed / forked selection may resolve to a different engine
 }
 /** Re-sync every mixer row's Gain slider/label from its resolved voice — used
  *  after a shared-gain edit so sibling channels reflect the new value live. */
@@ -886,6 +887,7 @@ function buildEditor(): void {
   fxPage = 0; // a freshly (re)built mixer starts at the first page of effect columns
   buildTracksTable();
   buildFxRack();
+  buildEngineLegend();
 }
 
 /** (Re)render the mixer rows: the always-visible core strip (Trk…Edit) plus the
@@ -906,9 +908,11 @@ function buildTracksTable(): void {
     const ov = voiceOverrides[c.key];
     const gRaw = Number(ov?.gain ?? 1);
     const gain = Number.isFinite(gRaw) ? gRaw : 1; // never let a bad value crash .toFixed
-    const inst = c.isDrum
+    const instCore = c.isDrum
       ? `<span class="filelabel">Drum kit</span>`
       : instrumentSelectHtml(c.key);
+    // colour chip in front of the dropdown flags the channel's synthesis engine
+    const inst = `<span class="instcell">${engineChipHtml(c)}${instCore}</span>`;
     // effect-send cells for the visible FX columns (0 stored as an absent key)
     const fxCells = pageFx
       .map((f) => {
@@ -1123,6 +1127,7 @@ els.tracks.addEventListener("change", (e) => {
     channelInstrument[key] = t.value;
     applyOptions();
     saveConfig();
+    refreshEngineChips(); // the new selection may use a different synthesis engine
     if (selectedKey === key) renderInstrumentEditor(); // reflect the newly selected instrument
     return;
   }
@@ -1168,6 +1173,53 @@ function resolveVoice(key: string): { voice: Voice; engine: EngineType; program:
     delete (v as Partial<VoiceOverride>).program;
   }
   return { voice: v, engine: engineOf(v), program: prog, isDrum };
+}
+
+// ---- per-channel synthesis-engine colour chips ----
+// A small coloured chip next to each mixer row's instrument dropdown shows, at a
+// glance, which synthesis engine that channel currently uses. Drums (channel 9)
+// are percussion, not one of the tonal engines, so they get their own colour.
+type EngineChipKey = EngineType | "drums";
+const ENGINE_META: Record<EngineChipKey, { abbr: string; name: string; color: string }> = {
+  ks:       { abbr: "KS",  name: "Karplus-Strong (string)", color: "#3fb96a" }, // green
+  fm:       { abbr: "FM",  name: "FM synthesis",            color: "#4a86ff" }, // blue
+  sub:      { abbr: "Sub", name: "Subtractive",             color: "#f0a13c" }, // amber
+  formant:  { abbr: "Voc", name: "Formant (vocal)",         color: "#b06cf0" }, // purple
+  additive: { abbr: "Add", name: "Additive (harmonics)",    color: "#8b93a7" }, // slate
+  drums:    { abbr: "Drm", name: "Drums (percussion)",      color: "#ec5b64" }, // red
+};
+/** The engine-chip key for a channel: its resolved engine, or "drums" for percussion. */
+function engineChipKey(c: ChanInfo): EngineChipKey {
+  return c.isDrum ? "drums" : resolveVoice(c.key).engine;
+}
+/** Chip markup for a mixer row (coloured dot + short label, full engine name in the tooltip). */
+function engineChipHtml(c: ChanInfo): string {
+  const k = engineChipKey(c);
+  const m = ENGINE_META[k];
+  return `<span class="engchip" id="engchip-${c.key}" data-eng="${k}" style="--eng:${m.color}" title="Engine: ${esc(m.name)}"><span class="engdot"></span><span class="englabel">${m.abbr}</span></span>`;
+}
+/** Re-colour every mixer row's engine chip in place (label + colour + tooltip) —
+ *  used after a channel's instrument or engine changes without a table rebuild. */
+function refreshEngineChips(): void {
+  for (const c of chanInfos) {
+    const el = document.getElementById(`engchip-${c.key}`);
+    if (!el) continue;
+    const k = engineChipKey(c);
+    const m = ENGINE_META[k];
+    el.dataset.eng = k;
+    el.style.setProperty("--eng", m.color);
+    el.title = `Engine: ${m.name}`;
+    const lbl = el.querySelector<HTMLElement>(".englabel");
+    if (lbl) lbl.textContent = m.abbr;
+  }
+}
+/** Populate the one-line colour→engine legend shown above the mixer table. */
+function buildEngineLegend(): void {
+  const el = document.getElementById("engineLegend");
+  if (!el) return;
+  el.innerHTML = `<span class="filelabel">Engine key:</span>` + (Object.values(ENGINE_META)
+    .map((m) => `<span class="englegitem" style="--eng:${m.color}" title="${esc(m.name)}"><span class="engdot"></span>${esc(m.name)}</span>`)
+    .join(""));
 }
 
 function selectChannel(key: string): void {
@@ -1396,6 +1448,7 @@ function switchEngine(key: string, engine: EngineType): void {
   setEngineOverride(ov, engine, engine === "additive" ? (seed as Harmonic[]) : seed);
   applyOptions();
   saveConfig();
+  refreshEngineChips(); // every channel on this instrument now shows the new engine
   renderInstrumentEditor();
 }
 
