@@ -8,11 +8,12 @@
   },
   "scripts": {
     "build": "node build.mjs",
-    "serve": "node build.mjs --serve"
+    "serve": "node build.mjs --serve",
+    "release": "node build.mjs --release"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "author": "Yannick Majoros",
+  "license": "MIT",
   "type": "module",
   "devDependencies": {
     "esbuild": "^0.28.1"
