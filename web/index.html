@@ -84,8 +84,13 @@
       #tracks select { padding: 3px 6px; font-size: 12px; max-width: 190px; }
       #tracks input[type="range"] { width: 72px; vertical-align: middle; }
       .mixbtn { padding: 2px 8px; font-size: 12px; border-radius: 6px; min-width: 30px; }
-      .mixbtn.on-mute { background: #7a2233; border-color: #b5179e; color: #fff; }
-      .mixbtn.on-solo { background: #2a5a2a; border-color: #8ac926; color: #fff; }
+      /* icon buttons: center the glyph, keep the compact footprint, no reflow */
+      .mixbtn, .editbtn { display: inline-flex; align-items: center; justify-content: center; line-height: 0; vertical-align: middle; }
+      .mixbtn .mixicon, .editbtn .mixicon { display: block; }
+      .mixbtn { color: var(--muted); } /* inactive glyph reads as dimmed… */
+      .mixbtn.on-mute, .mixbtn.on-solo { color: #fff; } /* …then white/filled when active */
+      .mixbtn.on-mute { background: #7a2233; border-color: #b5179e; }
+      .mixbtn.on-solo { background: #2a5a2a; border-color: #8ac926; }
       .cellval { color: var(--muted); font-variant-numeric: tabular-nums; display: inline-block; min-width: 26px; }
       /* per-channel synthesis-engine colour chips (mixer rows) + legend.
          --eng carries the engine colour; the dot always shows it, the pill tint
