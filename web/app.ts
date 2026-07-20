@@ -933,7 +933,6 @@ function buildEditor(): void {
   fxPage = 0; // a freshly (re)built mixer starts at the first page of effect columns
   buildTracksTable();
   buildFxRack();
-  buildEngineLegend();
 }
 
 /* Inline SVG glyphs for the mixer's Mute / Solo / Edit buttons. They use
@@ -1346,15 +1345,6 @@ function refreshEngineChips(): void {
     if (trig) trig.innerHTML = ipickTriggerInner(k, instrumentName(c.key));
   }
 }
-/** Populate the one-line colour→engine legend shown above the mixer table. */
-function buildEngineLegend(): void {
-  const el = document.getElementById("engineLegend");
-  if (!el) return;
-  el.innerHTML = `<span class="filelabel">Engine key:</span>` + (Object.values(ENGINE_META)
-    .map((m) => `<span class="englegitem" style="--eng:${m.color}" title="${esc(m.name)}"><span class="engdot"></span>${esc(m.name)}</span>`)
-    .join(""));
-}
-
 // ---- custom instrument picker (real HTML engine chips in a styled listbox) ----
 // A native <select>/<option> can only hold plain text, so we keep the native
 // <select> (visually hidden, class `.nativehide`) as the SOURCE OF TRUTH + change
@@ -1504,7 +1494,14 @@ function ipickChoose(value: string): void {
 function ipickReflow(): void {
   if (ipickOpenKey && ipickTrigger && ipickPopup && !ipickPopup.hidden) ipickPosition(ipickTrigger);
 }
-window.addEventListener("scroll", ipickReflow, true); // capture: also catch #tracks' own scroll
+// Reposition on PAGE/#tracks scroll — but NOT on the popup's OWN internal scroll:
+// ipickPosition momentarily lifts max-height to measure, which resets the popup's
+// scrollTop, so reflowing on its own scroll made the list snap back to the top
+// (i.e. "scrolling is broken"). Skip events whose target is the popup itself.
+window.addEventListener("scroll", (e) => {
+  if (ipickPopup && e.target === ipickPopup) return;
+  ipickReflow();
+}, true); // capture: also catch #tracks' own scroll
 window.addEventListener("resize", ipickReflow);
 // outside pointer press closes the popup (the trigger toggles itself; rows are inside)
 document.addEventListener("mousedown", (e) => {

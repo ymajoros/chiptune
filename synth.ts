@@ -132,6 +132,10 @@ export interface KsConfig {
   //   one-pole low-pass INSIDE the feedback loop: harmonics above it decay fast while the
   //   fundamental rings — the frequency-dependent damping of a real (esp. thick bass/wound) string.
   //   Low values (~800-1500) give a bright pluck that instantly settles to a round tone (kills "sitar").
+  hfTrack?: number; // 0..1 pitch-compensate the loop loss (damping + loopCut). The loop filters run
+  //   once per round-trip, and high notes cycle far more per second, so their harmonics collapse to a
+  //   near-pure sine ("elastic bloop"). >0 progressively OPENS the damping for higher notes so the
+  //   decay TIME is ~pitch-independent — high notes stay bright/percussive like a real piano. 0 = off.
 }
 
 /**
@@ -602,13 +606,19 @@ export function ksStringSetup(freq: number, ks: KsConfig): KsSetup {
   // [0, 0.5] half — higher is now always darker. (Passing b straight through, as the
   // code used to, meant damping>0.5 paradoxically re-brightened, and every guitar
   // preset clustered around the same tone regardless of its damping value.)
-  const dRaw = Number.isFinite(ks.damping) ? Math.min(Math.max(ks.damping, 0), 1) : 0.5;
+  // Pitch-compensate the loop loss (opt-in via hfTrack): the loop filters run once
+  // per round-trip and high notes cycle far more per second, so their harmonics
+  // collapse to a near-pure sine. Progressively OPEN the damping for higher notes
+  // (raise the loopCut cutoff, lighten the averager) so decay time is ~pitch-uniform.
+  const hfTrack = Math.min(Math.max(ks.hfTrack ?? 0, 0), 1);
+  const hfF = hfTrack > 0 ? Math.max(1, freq / 200) ** hfTrack : 1; // 1 below ~200 Hz, grows with pitch
+  const dRaw = (Number.isFinite(ks.damping) ? Math.min(Math.max(ks.damping, 0), 1) : 0.5) / hfF;
   const bEff = 0.5 * dRaw;
   const DAMP_DELAY = bEff; // the averager's group delay ≈ bEff samples (keeps tuning exact)
   // Extended-KS loop loss filter: a one-pole low-pass in the loop so highs decay
   // fast (frequency-dependent damping of a real string). Compensate its phase
   // delay so it darkens the tone without detuning the note.
-  const loopCut = Number.isFinite(ks.loopCut) ? (ks.loopCut as number) : 20000;
+  const loopCut = (Number.isFinite(ks.loopCut) ? (ks.loopCut as number) : 20000) * hfF;
   const lpA = loopCut < SR * 0.45 ? 1 - Math.exp((-2 * Math.PI * loopCut) / SR) : 1;
   const pdLP = lpA < 1 ? onepolePhaseDelay(lpA, w0) : 0;
   const target = SR / freq - pdDisp - DAMP_DELAY - pdLP;

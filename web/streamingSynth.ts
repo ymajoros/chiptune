@@ -382,14 +382,18 @@ export class PitchedVoice implements RtVoice {
     // baked at note start — you can't change a vibrating string's geometry, only
     // re-pluck it, so those only take effect on the next note.
     if (this.engine === "ks" && v.ks) {
-      const dRaw = Number.isFinite(v.ks.damping) ? Math.min(Math.max(v.ks.damping, 0), 1) : 0.5;
+      // pitch-compensate the loop loss exactly as ksStringSetup does (see hfTrack),
+      // so a live damping/loopCut edit keeps high notes bright rather than collapsing.
+      const hfTrack = Math.min(Math.max(v.ks.hfTrack ?? 0, 0), 1);
+      const hfF = hfTrack > 0 ? Math.max(1, (this.inc0 * SR) / 200) ** hfTrack : 1;
+      const dRaw = (Number.isFinite(v.ks.damping) ? Math.min(Math.max(v.ks.damping, 0), 1) : 0.5) / hfF;
       this.ksB = 0.5 * dRaw;
       this.ksDecay = Number.isFinite(v.ks.decay) ? Math.min(Math.max(v.ks.decay, 0), 1) : 0.996;
       // "String HF damp (Hz)": recompute the loop-loss one-pole so a held note
       // warms/brightens live (mirrors ksStringSetup's lpA). The delay-line phase
       // compensation stays baked, so a big live change detunes a ringing note by a
       // cent or two — negligible for editing, and correct again on the next note.
-      const loopCut = Number.isFinite(v.ks.loopCut) ? (v.ks.loopCut as number) : 20000;
+      const loopCut = (Number.isFinite(v.ks.loopCut) ? (v.ks.loopCut as number) : 20000) * hfF;
       this.ksLpA = loopCut < SR * 0.45 ? 1 - Math.exp((-2 * Math.PI * loopCut) / SR) : 1;
     }
   }
