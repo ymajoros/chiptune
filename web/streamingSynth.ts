@@ -375,14 +375,22 @@ export class PitchedVoice implements RtVoice {
     this.a = this.envSamples(v.attack);
     this.r = this.envSamples(v.release);
     this.amp = (this.note.velocity / 127) ** 1.5 * 0.25 * safeGain(v.gain);
-    // KS: the per-sample loop coefficients (damping, decay) are safe to change on
-    // a ringing note, so a held note responds live to those knobs. Tuning/dispersion
-    // and the pluck seed (pick/tone/strings/stiffness) are baked at note start —
-    // you can't change a vibrating string's geometry, only re-pluck it.
+    // KS: the per-sample loop coefficients (damping, decay, loop-loss cutoff) are
+    // safe to change on a ringing note, so a held note responds live to those knobs.
+    // (releaseDamp/body/pluckNoise are read from this.v every block, so they're live
+    // too.) Tuning/dispersion and the pluck seed (pick/tone/strings/stiffness) are
+    // baked at note start — you can't change a vibrating string's geometry, only
+    // re-pluck it, so those only take effect on the next note.
     if (this.engine === "ks" && v.ks) {
       const dRaw = Number.isFinite(v.ks.damping) ? Math.min(Math.max(v.ks.damping, 0), 1) : 0.5;
       this.ksB = 0.5 * dRaw;
       this.ksDecay = Number.isFinite(v.ks.decay) ? Math.min(Math.max(v.ks.decay, 0), 1) : 0.996;
+      // "String HF damp (Hz)": recompute the loop-loss one-pole so a held note
+      // warms/brightens live (mirrors ksStringSetup's lpA). The delay-line phase
+      // compensation stays baked, so a big live change detunes a ringing note by a
+      // cent or two — negligible for editing, and correct again on the next note.
+      const loopCut = Number.isFinite(v.ks.loopCut) ? (v.ks.loopCut as number) : 20000;
+      this.ksLpA = loopCut < SR * 0.45 ? 1 - Math.exp((-2 * Math.PI * loopCut) / SR) : 1;
     }
   }
 
